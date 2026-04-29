@@ -1,4 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import { isSupabaseConfigured } from "./lib/supabaseClient";
+import { createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct } from "./services/database";
+import { getAIDiscountReasoning, getCustomerRecommendation } from "./utils/groqAI";
+import { getCurrentPosition, getDistanceToShop, DEMO_LOCATIONS } from "./utils/geolocation";
 
 /* ─── COLOUR TOKENS ──────────────────────────────────── */
 const C = {
@@ -60,6 +64,57 @@ const MOCK_SHOP_PRODUCTS = [
   { id:4, name:"Britannia Bread", category:"Bakery", mrp:45, discount:35, expiry:"2025-05-02", daysLeft:2, qty:2, reserved:false, reserveMin:0, lapsed:true },
   { id:5, name:"Haldiram's Mix", category:"Snacks", mrp:150, discount:15, expiry:"2025-05-06", daysLeft:6, qty:4, reserved:false, reserveMin:0 },
 ];
+
+
+
+/* ─── SUPABASE → UI NORMALIZERS ─────────────────────── */
+const EMOJI_MAP = { Dairy:"🥛", Bakery:"🍞", Snacks:"🍿", Beverages:"🥤", Staples:"🌾", Other:"📦" };
+
+function normalizeDeal(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    mrp: Number(row.mrp),
+    discount: Number(row.discount),
+    store: row.store || "Local Store",
+    distance: row.distance || "nearby",
+    daysLeft: Number(row.days_left ?? 0),
+    emoji: EMOJI_MAP[row.category] || "📦",
+    reserved: row.is_reserved || false,
+    qty: Number(row.quantity ?? 1),
+    shopId: row.shop_id,
+    latitude: row.latitude,
+    longitude: row.longitude,
+  };
+}
+
+function normalizeProduct(row) {
+  const activeRes = Array.isArray(row.reservations)
+    ? row.reservations.find(r => r.status === "active")
+    : null;
+  const expiresAt = activeRes ? new Date(activeRes.expires_at) : null;
+  const reserveMin = expiresAt
+    ? Math.max(0, Math.round((expiresAt - Date.now()) / 60000))
+    : 0;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const expiry = row.expiry_date ? new Date(row.expiry_date) : null;
+  const daysLeft = expiry ? Math.max(0, Math.floor((expiry - today) / 86400000)) : 0;
+  return {
+    id: row.id,
+    name: row.name,
+    category: row.category,
+    mrp: Number(row.mrp),
+    discount: Number(row.discount),
+    expiry: row.expiry_date,
+    daysLeft,
+    qty: Number(row.quantity ?? 1),
+    reserved: row.is_reserved || false,
+    reserveMin,
+    reservedBy: activeRes?.customer_name || null,
+    lapsed: false,
+  };
+}
 
 /* ─── AI DISCOUNT ENGINE ─────────────────────────────── */
 function getAIDiscount(daysLeft, category, qty) {
@@ -159,11 +214,52 @@ function LoginModal({ role, onLogin, onClose }) {
     if (isShop && !licenceNumber.trim()) { setError("Licence number is required."); return; }
     setError("");
     setLoading(true);
-    setTimeout(() => {
-      // Save account for future logins
-      if (isShop) SAVED_ACCOUNTS[username] = { shop: shopName, location, licenceNumber };
+    setTimeout(async () => {
+      let geo = null;
+      let dbId = null;
+
+      try {
+        if (isShop) {
+          // Persist shopkeeper to Supabase if configured
+          if (isSupabaseConfigured) {
+            const shop = await findOrCreateShop({
+              owner_name: username,
+              shop_name: shopName,
+              licence_number: licenceNumber || null,
+              location: location || null,
+            });
+            dbId = shop.id;
+          }
+          // Save account for future logins (in-memory cache)
+          SAVED_ACCOUNTS[username] = { shop: shopName, location, licenceNumber };
+        } else {
+          geo = await getCurrentPosition();
+          // Persist customer to Supabase if configured
+          if (isSupabaseConfigured) {
+            const cust = await findOrCreateCustomer({
+              name: username,
+              latitude: geo?.latitude,
+              longitude: geo?.longitude
+            });
+            dbId = cust.id;
+            geo = { ...geo, id: dbId };
+          }
+        }
+      } catch (e) {
+        console.error("Error persisting user:", e);
+      }
+
       setLoading(false);
-      onLogin(role, { name: username, shop: shopName, location, licenceNumber });
+      onLogin(role, { 
+        name: username, 
+        shop: shopName, 
+        location, 
+        licenceNumber,
+        latitude: geo?.latitude,
+        longitude: geo?.longitude,
+        customerId: !isShop ? dbId : null,
+        shopId: isShop ? dbId : null
+      });
     }, 800);
   }
 
@@ -357,6 +453,37 @@ function LandingPage({ onSelectRole }) {
 function ShopkeeperDashboard({ user, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const [products, setProducts] = useState(MOCK_SHOP_PRODUCTS);
+  const [shopId, setShopId] = useState(null);
+
+  useEffect(()=>{
+    let ignore = false;
+
+    async function loadProducts() {
+      try {
+        const data = await listProducts();
+        if (!ignore && data.length > 0) setProducts(data.map(normalizeProduct));
+      } catch (error) {
+        console.error(error);
+      }
+    }
+
+    loadProducts();
+    return () => { ignore = true; };
+  }, []);
+
+  async function ensureShop() {
+    if (shopId) return shopId;
+
+    const shop = await createShop({
+      owner_name: user.name || "Shopkeeper",
+      shop_name: user.shop || "My Store",
+      licence_number: user.licenceNumber || null,
+      location: user.location || null,
+    });
+
+    setShopId(shop.id);
+    return shop.id;
+  }
 
   return (
     <div style={{ minHeight:"100vh", background:C.shopBg }}>
@@ -387,7 +514,7 @@ function ShopkeeperDashboard({ user, onLogout }) {
 
       <div style={{ maxWidth:980, margin:"0 auto", padding:"28px 20px" }}>
         {tab==="dashboard" && <ShopDashboard products={products} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
-        {tab==="upload" && <ShopUpload products={products} setProducts={setProducts} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
+        {tab==="upload" && <ShopUpload products={products} setProducts={setProducts} ensureShop={ensureShop} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
         {tab==="expiring" && <ShopExpiring products={products} setProducts={setProducts} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
       </div>
     </div>
@@ -402,7 +529,7 @@ function ShopDashboard({ products, accent, accentLight }) {
 
   return (
     <div className="fade-in">
-      <h2 style={{ fontSize:26, fontWeight:800, marginBottom:6 }}>Good morning, Ramesh 👋</h2>
+      <h2 style={{ fontSize:26, fontWeight:800, marginBottom:6 }}>Good morning, {user.name.split('_')[0].charAt(0).toUpperCase() + user.name.split('_')[0].slice(1)} 👋</h2>
       <p style={{ color:C.inkMuted, marginBottom:24 }}>Here's your store overview for today.</p>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:14, marginBottom:32 }}>
         <StatCard label="Active Listings" value={active} sub="Live on map right now" accent={accent} />
@@ -417,7 +544,7 @@ function ShopDashboard({ products, accent, accentLight }) {
           <div key={p.id} style={{ background:C.white, borderRadius:14, padding:"14px 18px",
             display:"flex", alignItems:"center", gap:16, border:`1px solid ${accent}15`,
             boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
-            <div style={{ fontSize:28, width:44, textAlign:"center" }}>{["🧈","🍞","🥤","🍪","🥛","🍿"][p.id%6]}</div>
+            <div style={{ fontSize:28, width:44, textAlign:"center" }}>{p.emoji || CATEGORY_EMOJI[p.category] || "📦"}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, fontSize:15 }}>{p.name}</div>
               <div style={{ fontSize:13, color:C.inkMuted }}>{p.category} · {p.qty} in stock</div>
@@ -436,10 +563,12 @@ function ShopDashboard({ products, accent, accentLight }) {
   );
 }
 
-function ShopUpload({ products, setProducts, accent, accentLight }) {
+function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) {
   const [form, setForm] = useState({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" });
   const [aiResult, setAiResult] = useState(null);
   const [submitted, setSubmitted] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [dbError, setDbError] = useState("");
 
   const today = new Date().toISOString().split("T")[0];
 
@@ -455,13 +584,36 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
 
   useEffect(()=>{
     if (daysLeft !== null && form.category && form.qty) {
-      setAiResult(getAIDiscount(daysLeft, form.category, parseInt(form.qty)||1));
-    }
-  }, [daysLeft, form.category, form.qty]);
+      const basic = getAIDiscount(daysLeft, form.category, parseInt(form.qty)||1);
+      setAiResult(basic);
 
-  function handleSubmit() {
+      if (form.name && form.mrp) {
+        const timer = setTimeout(async () => {
+          try {
+            const advanced = await getAIDiscountReasoning({
+              productName: form.name,
+              category: form.category,
+              mrp: parseInt(form.mrp),
+              daysLeft,
+              quantity: parseInt(form.qty),
+              suggestedDiscount: basic.pct
+            });
+            setAiResult(prev => ({ ...prev, ...advanced }));
+          } catch (e) {
+            console.error("AI reasoning error", e);
+          }
+        }, 1200);
+        return () => clearTimeout(timer);
+      }
+    }
+  }, [daysLeft, form.category, form.qty, form.name, form.mrp]);
+
+  async function handleSubmit() {
     if (!form.name || !form.mrp || !form.expiry) return;
-    const newP = {
+    setSaving(true);
+    setDbError("");
+
+    const localProduct = {
       id: products.length + 10,
       name: form.name,
       category: form.category,
@@ -473,7 +625,29 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
       qty: parseInt(form.qty),
       reserved: false, reserveMin:0
     };
-    setProducts(p=>[newP,...p]);
+
+    try {
+      const shopId = await ensureShop();
+      const savedProduct = await createProduct({
+        shop_id: shopId,
+        name: form.name,
+        category: form.category,
+        mrp: Number(form.mrp),
+        discount: usingDiscount || 10,
+        expiry_date: form.expiry,
+        quantity: Number(form.qty) || 1,
+        fssai_number: form.fssai,
+      });
+
+      setProducts(p=>[normalizeProduct(savedProduct),...p]);
+    } catch (error) {
+      console.error(error);
+      setDbError("Saved locally, but Supabase is not ready yet. Run the SQL schema in Supabase and try again.");
+      setProducts(p=>[localProduct,...p]);
+    } finally {
+      setSaving(false);
+    }
+
     setSubmitted(true);
     setTimeout(()=>{ setSubmitted(false); setForm({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" }); setAiResult(null); }, 3000);
   }
@@ -492,6 +666,7 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
       <div style={{ fontSize:64 }}>🎉</div>
       <h3 style={{ fontSize:24, fontWeight:800, color:accent }}>Product listed!</h3>
       <p style={{ color:C.inkMuted }}>Your deal is now live on the customer map.</p>
+      {dbError && <p style={{ color:C.amber, fontSize:13, maxWidth:420, textAlign:"center" }}>{dbError}</p>}
     </div>
   );
 
@@ -550,9 +725,9 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
           </div>
 
           <Btn onClick={handleSubmit} color={C.white} bg={accent}
-            disabled={!form.name || !form.mrp || !form.expiry}
+            disabled={saving || !form.name || !form.mrp || !form.expiry}
             style={{ width:"100%", justifyContent:"center", padding:"13px", fontSize:15, marginTop:4 }}>
-            🚀 List Deal — Go Live Instantly
+            {saving ? "Saving..." : "🚀 List Deal — Go Live Instantly"}
           </Btn>
         </div>
 
@@ -563,7 +738,14 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
               <div style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:accent, textTransform:"uppercase", marginBottom:10 }}>🤖 AI Recommendation</div>
               <div style={{ fontSize:42, fontFamily:"'Syne',sans-serif", fontWeight:800, color:accent }}>{aiResult.pct}% OFF</div>
               <div style={{ fontSize:13, fontWeight:700, color:C.ink, marginTop:4, marginBottom:6 }}>{aiResult.label}</div>
-              <div style={{ fontSize:12, color:C.inkMuted, background:accentLight, padding:"8px 12px", borderRadius:8, lineHeight:1.6 }}>{aiResult.reason}</div>
+              <div style={{ fontSize:12, color:C.inkMuted, background:accentLight, padding:"10px 14px", borderRadius:10, lineHeight:1.6, border:`1px solid ${accent}20` }}>
+                <strong>Reasoning:</strong> {aiResult.reasoning || aiResult.reason}
+                {aiResult.tip && (
+                  <div style={{ marginTop:8, paddingTop:8, borderTop:`1px dashed ${accent}40`, color:accent, fontWeight:600 }}>
+                    💡 Tip: {aiResult.tip}
+                  </div>
+                )}
+              </div>
               {form.customDiscount !== "" && (
                 <div style={{ marginTop:10, fontSize:12, color:C.amber, background:C.amberLight, padding:"8px 12px", borderRadius:8 }}>
                   ✏️ You are overriding with <strong>{form.customDiscount}%</strong> discount
@@ -621,8 +803,11 @@ function ShopExpiring({ products, setProducts, accent, accentLight }) {
     return ()=>clearInterval(t);
   }, [products]);
 
-  function release(id) {
+  async function release(id) {
     setProducts(ps=>ps.map(p=>p.id===id ? {...p, reserved:false, reserveMin:0} : p));
+    if (isSupabaseConfigured) {
+      try { await releaseReservation(id); } catch(e) { console.error("release error", e); }
+    }
   }
 
   const sorted = [...products].sort((a,b)=>a.daysLeft - b.daysLeft);
@@ -641,7 +826,7 @@ function ShopExpiring({ products, setProducts, accent, accentLight }) {
             <div key={p.id} className="fade-in" style={{ background:C.white, borderRadius:16, padding:"18px 22px",
               boxShadow:"0 1px 6px rgba(0,0,0,0.07)", border: p.daysLeft<=1 ? `1.5px solid ${C.red}30` : p.lapsed ? `1.5px solid ${C.amber}30` : `1px solid ${accent}15` }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:14, flexWrap:"wrap" }}>
-                <div style={{ fontSize:34 }}>{["🧈","🍞","🥤","🍪","🥛","🍿"][p.id%6]}</div>
+                <div style={{ fontSize:34 }}>{p.emoji || CATEGORY_EMOJI[p.category] || "📦"}</div>
                 <div style={{ flex:1, minWidth:200 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:4 }}>
                     <span style={{ fontSize:16, fontWeight:700 }}>{p.name}</span>
@@ -692,8 +877,39 @@ function ShopExpiring({ products, setProducts, accent, accentLight }) {
 function CustomerHome({ user, onLogout }) {
   const [tab, setTab] = useState("deals");
   const [deals, setDeals] = useState(MOCK_DEALS);
+  const [userLoc, setUserLoc] = useState(user.latitude ? { latitude: user.latitude, longitude: user.longitude } : DEMO_LOCATIONS.center);
   const [reserved, setReserved] = useState({});
   const [timers, setTimers] = useState({});
+  const [dbStatus, setDbStatus] = useState("loading");
+
+  const loadDeals = useCallback(async () => {
+    try {
+      const data = await listActiveDeals();
+      let normalized = data.length > 0 ? data.map(normalizeDeal) : MOCK_DEALS;
+      
+      // Calculate real distances if we have user location
+      if (userLoc) {
+        normalized = normalized.map(d => {
+          if (d.latitude && d.longitude) {
+            const dist = getDistanceToShop(userLoc.latitude, userLoc.longitude, d.latitude, d.longitude);
+            return { ...d, distance: dist ? dist.formatted : d.distance, distanceMeters: dist ? dist.meters : 999999 };
+          }
+          return { ...d, distanceMeters: 999999 };
+        });
+      }
+
+      setDeals(normalized);
+      setDbStatus(data.length > 0 ? "live" : "empty");
+    } catch (error) {
+      console.error(error);
+      setDeals(MOCK_DEALS);
+      setDbStatus("mock");
+    }
+  }, [userLoc]);
+
+  useEffect(()=>{
+    loadDeals();
+  }, [loadDeals]);
 
   useEffect(()=>{
     const t = setInterval(()=>{
@@ -704,7 +920,7 @@ function CustomerHome({ user, onLogout }) {
           else {
             delete next[id];
             setReserved(r=>{ const nr={...r}; delete nr[id]; return nr; });
-            setDeals(ds=>ds.map(d=>d.id===parseInt(id) ? {...d, reserved:false} : d));
+            setDeals(ds=>ds.map(d=>String(d.id)===String(id) ? {...d, reserved:false} : d));
           }
         });
         return next;
@@ -713,11 +929,20 @@ function CustomerHome({ user, onLogout }) {
     return ()=>clearInterval(t);
   }, []);
 
-  function reserve(deal) {
+  async function reserve(deal) {
     if (Object.keys(reserved).length >= 3) return alert("Max 3 active reservations allowed.");
     setReserved(r=>({...r,[deal.id]:true}));
     setTimers(t=>({...t,[deal.id]:1200}));
     setDeals(ds=>ds.map(d=>d.id===deal.id ? {...d, reserved:true} : d));
+
+    if (dbStatus === "live") {
+      try {
+        await reserveProduct(deal.id, user.name || "Customer", user.phone || "", user.customerId);
+        await loadDeals();
+      } catch (error) {
+        console.error(error);
+      }
+    }
   }
 
   return (
@@ -752,7 +977,7 @@ function CustomerHome({ user, onLogout }) {
       </nav>
 
       <div style={{ maxWidth:1000, margin:"0 auto", padding:"28px 20px" }}>
-        {tab==="deals" && <CustomerDeals deals={deals} reserved={reserved} timers={timers} onReserve={reserve} />}
+        {tab==="deals" && <CustomerDeals deals={deals} userLoc={userLoc} reserved={reserved} timers={timers} onReserve={reserve} dbStatus={dbStatus} />}
         {tab==="search" && <CustomerSearch deals={deals} reserved={reserved} timers={timers} onReserve={reserve} />}
       </div>
     </div>
@@ -819,64 +1044,102 @@ function DealCard({ deal, reserved, timer, onReserve }) {
     </div>
   );
 }
+function RealMap({ deals, center }) {
+  const mapRef = useRef(null);
+  const mapInstance = useRef(null);
+  const markersLayer = useRef(null);
 
-function MockMap({ deals, reserved }) {
-  const pins = [
-    { x:120, y:160, deals:[deals[0], deals[5]], label:"Raju Kirana" },
-    { x:280, y:90,  deals:[deals[1]], label:"Sri Stores" },
-    { x:400, y:200, deals:[deals[2]], label:"Ramesh General" },
-    { x:520, y:130, deals:[deals[3]], label:"Corner Shop" },
-    { x:600, y:250, deals:[deals[4]], label:"Pandey Kirana" },
-  ];
-  const roads = [[60,100,700,100],[60,200,700,200],[200,40,200,300],[450,40,450,300],[300,140,300,300]];
+  useEffect(() => {
+    if (!mapRef.current || mapInstance.current) return;
 
-  return (
-    <div style={{ background:"#e8e4dc", borderRadius:16, overflow:"hidden", position:"relative",
-      border:`1px solid ${C.custAccent}20`, boxShadow:"0 2px 12px rgba(0,0,0,0.08)" }}>
-      <svg width="100%" viewBox="0 0 700 300" style={{ display:"block" }}>
-        {roads.map(([x1,y1,x2,y2],i)=>(
-          <line key={i} x1={x1} y1={y1} x2={x2} y2={y2} stroke="#d0c8bc" strokeWidth={i<3?"18":"12"} strokeLinecap="round" />
-        ))}
-        <circle cx={340} cy={175} r={140} fill={`${C.custAccent}08`} stroke={`${C.custAccent}30`} strokeWidth={1.5} strokeDasharray="6 4" />
-        <text x={340} y={330} textAnchor="middle" fontSize={11} fill={`${C.custAccent}80`} fontFamily="DM Sans">2km radius</text>
-        <circle cx={340} cy={175} r={6} fill={C.custAccent} />
-        <circle cx={340} cy={175} r={14} fill={`${C.custAccent}30`} />
-        <text x={352} y={170} fontSize={10} fill={C.custAccent} fontWeight="bold" fontFamily="DM Sans">You</text>
+    // Use window.L since it's loaded from CDN
+    const L = window.L;
+    if (!L) return;
 
-        {pins.map((pin,i)=>{
-          const d = pin.deals[0];
-          const isRes = d && (reserved[d.id] || d.reserved);
-          const col = d?.daysLeft <= 1 ? C.red : d?.daysLeft <= 3 ? C.amber : C.green;
-          return (
-            <g key={i}>
-              <circle cx={pin.x} cy={pin.y} r={20} fill={isRes ? "#999" : col} opacity={0.9} />
-              <text x={pin.x} y={pin.y+1} textAnchor="middle" dominantBaseline="middle" fontSize={11} fill="white" fontWeight="bold" fontFamily="DM Sans">
-                {d ? `₹${discountedPrice(d.mrp,d.discount)}` : ""}
-              </text>
-              {isRes && <text x={pin.x} y={pin.y-26} textAnchor="middle" fontSize={10} fill="#666" fontFamily="DM Sans">🔒</text>}
-              <text x={pin.x} y={pin.y+32} textAnchor="middle" fontSize={9} fill={C.inkMuted} fontFamily="DM Sans">{pin.label}</text>
-            </g>
-          );
-        })}
-      </svg>
-      <div style={{ position:"absolute", top:10, right:10, background:C.white, borderRadius:10,
-        padding:"8px 12px", fontSize:11, boxShadow:"0 1px 6px rgba(0,0,0,0.1)" }}>
-        <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-          <span style={{ width:8, height:8, borderRadius:"50%", background:C.red, display:"inline-block" }} /> Today
-          <span style={{ width:8, height:8, borderRadius:"50%", background:C.amber, display:"inline-block" }} /> 2–3 days
-          <span style={{ width:8, height:8, borderRadius:"50%", background:C.green, display:"inline-block" }} /> 4–7 days
-        </div>
-      </div>
-    </div>
-  );
+    mapInstance.current = L.map(mapRef.current).setView([center.latitude, center.longitude], 14);
+    L.tileLayer('https://{s}.tile.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+      attribution: '© OpenStreetMap contributors'
+    }).addTo(mapInstance.current);
+
+    markersLayer.current = L.layerGroup().addTo(mapInstance.current);
+
+    return () => {
+      if (mapInstance.current) {
+        mapInstance.current.remove();
+        mapInstance.current = null;
+      }
+    };
+  }, [center]);
+
+  useEffect(() => {
+    const L = window.L;
+    if (!L || !mapInstance.current || !markersLayer.current) return;
+
+    markersLayer.current.clearLayers();
+
+    // Group deals by shop location
+    const storeMarkers = {};
+    deals.forEach(deal => {
+      if (deal.latitude && deal.longitude) {
+        const key = `${deal.latitude},${deal.longitude}`;
+        if (!storeMarkers[key]) {
+          storeMarkers[key] = {
+            lat: deal.latitude,
+            lng: deal.longitude,
+            store: deal.store,
+            deals: []
+          };
+        }
+        storeMarkers[key].deals.push(deal);
+      }
+    });
+
+    Object.values(storeMarkers).forEach(site => {
+      const urgency = Math.min(...site.deals.map(d => d.daysLeft));
+      const color = urgency <= 1 ? C.red : urgency <= 3 ? C.amber : C.green;
+      
+      const icon = L.divIcon({
+        className: 'custom-div-icon',
+        html: `<div style="background-color: ${color}; width: 32px; height: 32px; border-radius: 50%; border: 2.5px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 10px; box-shadow: 0 3px 8px rgba(0,0,0,0.25); font-family: Syne, sans-serif;">₹${Math.min(...site.deals.map(d => discountedPrice(d.mrp, d.discount)))}</div>`,
+        iconSize: [32, 32],
+        iconAnchor: [16, 16]
+      });
+
+      L.marker([site.lat, site.lng], { icon })
+        .addTo(markersLayer.current)
+        .bindPopup(`
+          <div style="font-family: DM Sans, sans-serif; padding: 4px">
+            <strong style="color: ${C.ink}">${site.store}</strong><br/>
+            <span style="font-size: 12px; color: ${C.inkMuted}">${site.deals.length} active deals</span>
+          </div>
+        `);
+    });
+
+    // User marker
+    const userIcon = L.divIcon({
+      className: 'user-icon',
+      html: `<div style="background-color: ${C.custAccent}; width: 14px; height: 14px; border-radius: 50%; border: 2.5px solid white; box-shadow: 0 0 0 5px ${C.custAccent}30"></div>`,
+      iconSize: [14, 14],
+      iconAnchor: [7, 7]
+    });
+    L.marker([center.latitude, center.longitude], { icon: userIcon })
+      .addTo(markersLayer.current)
+      .bindPopup("<strong>You are here</strong>");
+
+    // Center map on user
+    mapInstance.current.panTo([center.latitude, center.longitude]);
+
+  }, [deals, center]);
+
+  return <div ref={mapRef} style={{ height: 320, borderRadius: 20, marginBottom: 24, zIndex: 5, border: `1px solid ${C.custAccent}20`, boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }} />;
 }
 
-function CustomerDeals({ deals, reserved, timers, onReserve }) {
+function CustomerDeals({ deals, userLoc, reserved, timers, onReserve, dbStatus }) {
   const [sort, setSort] = useState("distance");
   const sorted = [...deals].sort((a,b)=>{
     if (sort==="discount") return b.discount - a.discount;
     if (sort==="expiry") return a.daysLeft - b.daysLeft;
-    return parseInt(a.distance) - parseInt(b.distance);
+    return (a.distanceMeters || 999999) - (b.distanceMeters || 999999);
   });
 
   return (
@@ -884,7 +1147,10 @@ function CustomerDeals({ deals, reserved, timers, onReserve }) {
       <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16, flexWrap:"wrap", gap:12 }}>
         <div>
           <h2 style={{ fontSize:24, fontWeight:800 }}>Deals Near You 📍</h2>
-          <p style={{ color:C.inkMuted, fontSize:14, marginTop:2 }}>Indiranagar, Bengaluru · {deals.length} deals within 2km</p>
+          <p style={{ color:C.inkMuted, fontSize:14, marginTop:2 }}>{userLoc ? "Showing based on your current location" : "Indiranagar, Bengaluru"} · {deals.length} deals nearby</p>
+          {dbStatus === "live" && <p style={{ color:C.green, fontSize:12, marginTop:4 }}>Connected to Supabase live data</p>}
+          {dbStatus === "mock" && <p style={{ color:C.amber, fontSize:12, marginTop:4 }}>Showing demo data until Supabase tables are created</p>}
+          {dbStatus === "empty" && <p style={{ color:C.amber, fontSize:12, marginTop:4 }}>Supabase connected; showing demo cards until a product is uploaded</p>}
         </div>
         <div style={{ display:"flex", gap:8, alignItems:"center" }}>
           <span style={{ fontSize:13, color:C.inkMuted }}>Sort:</span>
@@ -899,7 +1165,7 @@ function CustomerDeals({ deals, reserved, timers, onReserve }) {
         </div>
       </div>
 
-      <MockMap deals={deals} reserved={reserved} />
+      <RealMap deals={deals} center={userLoc || DEMO_LOCATIONS.center} />
       <div style={{ height:20 }} />
 
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))", gap:16 }}>
