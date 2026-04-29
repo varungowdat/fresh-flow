@@ -135,6 +135,7 @@ function LoginModal({ role, onLogin, onClose }) {
   const [password, setPassword]   = useState("");
   const [shopName, setShopName]   = useState("");
   const [location, setLocation]   = useState("");
+  const [licenceNumber, setLicenceNumber] = useState("");
   const [showPw, setShowPw]       = useState(false);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState("");
@@ -145,6 +146,7 @@ function LoginModal({ role, onLogin, onClose }) {
       const saved = SAVED_ACCOUNTS[username];
       setShopName(saved.shop || "");
       setLocation(saved.location || "");
+      setLicenceNumber(saved.licenceNumber || "");
     }
   }, [username, isShop]);
 
@@ -154,13 +156,14 @@ function LoginModal({ role, onLogin, onClose }) {
     if (!username.trim() || !password.trim()) { setError("Please fill in all required fields."); return; }
     if (isShop && !shopName.trim()) { setError("Shop name is required."); return; }
     if (isShop && !location.trim()) { setError("Shop location is required."); return; }
+    if (isShop && !licenceNumber.trim()) { setError("Licence number is required."); return; }
     setError("");
     setLoading(true);
     setTimeout(() => {
       // Save account for future logins
-      if (isShop) SAVED_ACCOUNTS[username] = { shop: shopName, location };
+      if (isShop) SAVED_ACCOUNTS[username] = { shop: shopName, location, licenceNumber };
       setLoading(false);
-      onLogin(role, { name: username, shop: shopName, location });
+      onLogin(role, { name: username, shop: shopName, location, licenceNumber });
     }, 800);
   }
 
@@ -222,6 +225,10 @@ function LoginModal({ role, onLogin, onClose }) {
               <div>
                 <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>Shop Name</label>
                 <input {...inp(shopName, setShopName, "e.g. Ramesh General Store")} />
+              </div>
+              <div>
+                <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>Licence Number</label>
+                <input {...inp(licenceNumber, setLicenceNumber, "e.g. 1234567890")} />
               </div>
               <div>
                 <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>
@@ -302,16 +309,6 @@ function LandingPage({ onSelectRole }) {
           <p style={{ fontSize:17, color:C.inkMuted, lineHeight:1.7, marginBottom:36, maxWidth:480, margin:"0 auto 36px" }}>
             KiranaDeals connects neighbourhood shopkeepers with nearby customers — turning near-expiry products into real savings for everyone.
           </p>
-          <div style={{ display:"flex", gap:14, justifyContent:"center", flexWrap:"wrap" }}>
-            <Btn onClick={()=>onSelectRole("customer")} color={C.white} bg={C.custAccent}
-              style={{ padding:"14px 28px", fontSize:15 }}>
-              Find Deals Near Me →
-            </Btn>
-            <Btn onClick={()=>onSelectRole("shopkeeper")} color={C.shopAccent} bg={C.shopAccentLight}
-              style={{ padding:"14px 28px", fontSize:15, border:`1.5px solid ${C.shopAccent}` }}>
-              I'm a Shopkeeper
-            </Btn>
-          </div>
         </div>
 
         {/* Stats row */}
@@ -440,7 +437,7 @@ function ShopDashboard({ products, accent, accentLight }) {
 }
 
 function ShopUpload({ products, setProducts, accent, accentLight }) {
-  const [form, setForm] = useState({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"" });
+  const [form, setForm] = useState({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" });
   const [aiResult, setAiResult] = useState(null);
   const [submitted, setSubmitted] = useState(false);
 
@@ -469,6 +466,7 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
       name: form.name,
       category: form.category,
       mrp: parseInt(form.mrp),
+      fssai: form.fssai,
       discount: usingDiscount || 10,
       expiry: form.expiry,
       daysLeft: daysLeft,
@@ -477,7 +475,7 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
     };
     setProducts(p=>[newP,...p]);
     setSubmitted(true);
-    setTimeout(()=>{ setSubmitted(false); setForm({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"" }); setAiResult(null); }, 3000);
+    setTimeout(()=>{ setSubmitted(false); setForm({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" }); setAiResult(null); }, 3000);
   }
 
   const inp = (field) => ({
@@ -527,6 +525,10 @@ function ShopUpload({ products, setProducts, accent, accentLight }) {
             <div>
               <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>Stock Qty</label>
               <input {...inp("qty")} type="number" min="1" placeholder="1" />
+            </div>
+            <div style={{ gridColumn:"span 2" }}>
+              <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>FSSAI Number</label>
+              <input {...inp("fssai")} placeholder="e.g. 12345678901234" />
             </div>
             <div style={{ gridColumn:"span 2" }}>
               <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>

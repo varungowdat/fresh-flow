@@ -10,6 +10,16 @@
 
 ---
 
+## 🚀 Recent Updates (Hackathon)
+
+- **Twilio OTP Call Integration**: Created `send-otp-call.js` for real-time automated phone calls to deliver OTPs.
+- **UI Refinements**:
+  - Removed "Find Deals Near Me" and "I'm a Shopkeeper" buttons from the hero section.
+  - Added **Licence Number** requirement in the Shopkeeper Login modal.
+  - Added **FSSAI Number** requirement in the Shopkeeper Product Upload form.
+
+---
+
 ## 🗂️ Project Structure
 
 ```
@@ -92,6 +102,7 @@ kirana-deals/
 | Category | Dropdown | Dairy / Bakery / Snacks / Beverages / Staples / Other |
 | MRP (₹) | Number input | Original price |
 | Expiry Date | Date picker | Must be a future date |
+| FSSAI Number | Text input | Added for compliance |
 | Product Photo | Image upload | Mobile camera-friendly; max 5MB |
 | Stock Quantity | Number input | How many units available |
 | Shopkeeper's Own Discount (%) | Optional number | If left blank, AI calculates |
@@ -288,7 +299,7 @@ const discountMap = {
 | Role | Sign Up Requires | Sign In |
 |------|-----------------|---------|
 | Customer | Name, Phone, PIN code | Phone + OTP |
-| Shopkeeper | Name, Phone, Shop Name, Address, GSTIN (optional) | Phone + OTP |
+| Shopkeeper | Name, Phone, Shop Name, Address, Licence Number | Phone + OTP |
 
 - OTP-based login (no passwords) — suits low-digital-literacy users
 - JWT tokens stored in `localStorage` / `sessionStorage`
@@ -371,6 +382,11 @@ VITE_FIREBASE_API_KEY=your_firebase_key          # if using Firebase Auth
 VITE_MAPS_API_KEY=your_google_maps_key           # optional, Leaflet needs no key
 VITE_DEFAULT_RADIUS_KM=2                         # deal discovery radius
 VITE_RESERVATION_TIMEOUT_MINUTES=20
+
+TWILIO_ACCOUNT_SID=your_twilio_account_sid
+TWILIO_AUTH_TOKEN=your_twilio_auth_token
+TWILIO_PHONE_NUMBER=your_twilio_phone_number
+OTP_RECIPIENT_PHONE_NUMBER=recipient_phone_number
 ```
 
 ---
