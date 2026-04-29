@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
-import { createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct } from "./services/database";
+import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct } from "./services/database";
 import { getAIDiscountReasoning, getCustomerRecommendation } from "./utils/groqAI";
 import { getCurrentPosition, getDistanceToShop, DEMO_LOCATIONS } from "./utils/geolocation";
 
@@ -190,48 +190,61 @@ function LoginModal({ role, onLogin, onClose }) {
   const [password, setPassword]   = useState("");
   const [shopName, setShopName]   = useState("");
   const [location, setLocation]   = useState("");
+  const [mode, setMode]           = useState("login"); // 'login' or 'signup'
   const [licenceNumber, setLicenceNumber] = useState("");
   const [showPw, setShowPw]       = useState(false);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState("");
 
-  // When username changes, auto-fill saved location for returning shopkeepers
-  useEffect(() => {
-    if (isShop && username && SAVED_ACCOUNTS[username]) {
-      const saved = SAVED_ACCOUNTS[username];
-      setShopName(saved.shop || "");
-      setLocation(saved.location || "");
-      setLicenceNumber(saved.licenceNumber || "");
-    }
-  }, [username, isShop]);
-
-  const isReturning = isShop && username && !!SAVED_ACCOUNTS[username];
-
   function handleLogin() {
     if (!username.trim() || !password.trim()) { setError("Please fill in all required fields."); return; }
-    if (isShop && !shopName.trim()) { setError("Shop name is required."); return; }
-    if (isShop && !location.trim()) { setError("Shop location is required."); return; }
-    if (isShop && !licenceNumber.trim()) { setError("Licence number is required."); return; }
+    if (mode === "signup" && isShop) {
+      if (!shopName.trim()) { setError("Shop name is required."); return; }
+      if (!location.trim()) { setError("Shop location is required."); return; }
+      if (!licenceNumber.trim()) { setError("Licence number is required."); return; }
+    }
     setError("");
     setLoading(true);
     setTimeout(async () => {
       let geo = null;
       let dbId = null;
 
+      let finalShopName = shopName;
+      let finalLocation = location;
+      let finalLicence = licenceNumber;
+
       try {
         if (isShop) {
           // Persist shopkeeper to Supabase if configured
           if (isSupabaseConfigured) {
-            const shop = await findOrCreateShop({
-              owner_name: username,
-              shop_name: shopName,
-              licence_number: licenceNumber || null,
-              location: location || null,
-            });
-            dbId = shop.id;
+            const existing = await checkShopExists(username.trim());
+
+            if (mode === "login") {
+              if (!existing) {
+                setError("Shopkeeper not found. Please sign up.");
+                setLoading(false);
+                return;
+              }
+              dbId = existing.id;
+              finalShopName = existing.shop_name;
+              finalLocation = existing.location;
+              finalLicence = existing.licence_number;
+            } else {
+              // mode === "signup"
+              if (existing) {
+                setError("Username already taken. Please login.");
+                setLoading(false);
+                return;
+              }
+              const shop = await findOrCreateShop({
+                owner_name: username.trim(),
+                shop_name: shopName.trim(),
+                licence_number: licenceNumber.trim() || null,
+                location: location.trim() || null,
+              });
+              dbId = shop.id;
+            }
           }
-          // Save account for future logins (in-memory cache)
-          SAVED_ACCOUNTS[username] = { shop: shopName, location, licenceNumber };
         } else {
           geo = await getCurrentPosition();
           // Persist customer to Supabase if configured
@@ -252,9 +265,9 @@ function LoginModal({ role, onLogin, onClose }) {
       setLoading(false);
       onLogin(role, { 
         name: username, 
-        shop: shopName, 
-        location, 
-        licenceNumber,
+        shop: finalShopName, 
+        location: finalLocation, 
+        licenceNumber: finalLicence,
         latitude: geo?.latitude,
         longitude: geo?.longitude,
         customerId: !isShop ? dbId : null,
@@ -287,12 +300,28 @@ function LoginModal({ role, onLogin, onClose }) {
           <div>
             <div style={{ fontSize:11, fontWeight:700, letterSpacing:"0.1em", color:accent,
               textTransform:"uppercase", marginBottom:6 }}>
-              {isShop ? "🏪 Shopkeeper Login" : "🛍️ Customer Login"}
+              {isShop ? "🏪 Shopkeeper Portal" : "🛍️ Customer Portal"}
             </div>
-            <h2 style={{ fontSize:22, fontWeight:800 }}>Welcome back</h2>
+            <h2 style={{ fontSize:22, fontWeight:800 }}>{mode === "login" ? "Welcome back" : "Create account"}</h2>
           </div>
           <button onClick={onClose} style={{ background:"none", border:"none", fontSize:20,
             color:C.inkMuted, cursor:"pointer", lineHeight:1 }}>✕</button>
+        </div>
+
+        {/* Mode Toggle */}
+        <div style={{ display:"flex", background:C.cream, borderRadius:12, padding:4, marginBottom:20 }}>
+          <button onClick={() => { setMode("login"); setError(""); }}
+            style={{ flex:1, padding:"8px 0", borderRadius:10, fontSize:13, fontWeight:700, border:"none", cursor:"pointer",
+              background: mode==="login" ? C.white : "transparent", color: mode==="login" ? accent : C.inkMuted,
+              boxShadow: mode==="login" ? "0 1px 4px rgba(0,0,0,0.06)" : "none", transition:"all 0.2s" }}>
+            Login
+          </button>
+          <button onClick={() => { setMode("signup"); setError(""); }}
+            style={{ flex:1, padding:"8px 0", borderRadius:10, fontSize:13, fontWeight:700, border:"none", cursor:"pointer",
+              background: mode==="signup" ? C.white : "transparent", color: mode==="signup" ? accent : C.inkMuted,
+              boxShadow: mode==="signup" ? "0 1px 4px rgba(0,0,0,0.06)" : "none", transition:"all 0.2s" }}>
+            Sign Up
+          </button>
         </div>
 
         <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
@@ -316,8 +345,8 @@ function LoginModal({ role, onLogin, onClose }) {
           </div>
 
           {/* Shopkeeper-only fields */}
-          {isShop && (
-            <>
+          {isShop && mode === "signup" && (
+            <div className="fade-in" style={{ display:"flex", flexDirection:"column", gap:14 }}>
               <div>
                 <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>Shop Name</label>
                 <input {...inp(shopName, setShopName, "e.g. Ramesh General Store")} />
@@ -329,24 +358,10 @@ function LoginModal({ role, onLogin, onClose }) {
               <div>
                 <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>
                   Shop Location
-                  {isReturning && (
-                    <span style={{ marginLeft:8, fontSize:11, color:C.green, fontWeight:700,
-                      background:C.greenLight, padding:"1px 7px", borderRadius:6 }}>📍 Saved</span>
-                  )}
                 </label>
-                <input {...inp(location, setLocation, "e.g. 12th Cross, Indiranagar, Bengaluru")}
-                  style={{ width:"100%", padding:"10px 14px",
-                    border:`1.5px solid ${isReturning ? C.green : C.inkFaint}`,
-                    borderRadius:10, fontSize:14, outline:"none",
-                    background: isReturning ? C.greenLight : C.white,
-                    color: C.ink, transition:"all 0.15s" }} />
-                {isReturning && (
-                  <div style={{ fontSize:11, color:C.inkMuted, marginTop:4 }}>
-                    📍 Location saved from last login · You can update it anytime
-                  </div>
-                )}
+                <input {...inp(location, setLocation, "e.g. 12th Cross, Indiranagar, Bengaluru")} />
               </div>
-            </>
+            </div>
           )}
 
           {/* Error */}
@@ -382,10 +397,10 @@ function LandingPage({ onSelectRole }) {
         <div style={{ display:"flex", gap:12, alignItems:"center" }}>
           <Btn onClick={()=>onSelectRole("customer")} color={C.custAccent} bg={C.custAccentLight}
             style={{ border:`1.5px solid ${C.custAccent}33` }}>
-            🛍️ Sign in as Customer
+            🛍️ Customer Portal
           </Btn>
           <Btn onClick={()=>onSelectRole("shopkeeper")} color={C.white} bg={C.shopAccent}>
-            🏪 Sign in as Shopkeeper
+            🏪 Shopkeeper Portal
           </Btn>
         </div>
       </nav>
@@ -439,7 +454,7 @@ function LandingPage({ onSelectRole }) {
               </ul>
               <div style={{ marginTop:18, background:c.bg, color:c.accent, padding:"9px 16px",
                 borderRadius:10, fontSize:14, fontWeight:700, textAlign:"center" }}>
-                Sign in as {c.title.split(" ")[2]} →
+                Login / Sign Up →
               </div>
             </div>
           ))}
@@ -513,7 +528,7 @@ function ShopkeeperDashboard({ user, onLogout }) {
       </nav>
 
       <div style={{ maxWidth:980, margin:"0 auto", padding:"28px 20px" }}>
-        {tab==="dashboard" && <ShopDashboard products={products} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
+        {tab==="dashboard" && <ShopDashboard products={products} user={user} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
         {tab==="upload" && <ShopUpload products={products} setProducts={setProducts} ensureShop={ensureShop} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
         {tab==="expiring" && <ShopExpiring products={products} setProducts={setProducts} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
       </div>
@@ -521,7 +536,7 @@ function ShopkeeperDashboard({ user, onLogout }) {
   );
 }
 
-function ShopDashboard({ products, accent, accentLight }) {
+function ShopDashboard({ products, user, accent, accentLight }) {
   const active = products.filter(p=>!p.lapsed).length;
   const reserved = products.filter(p=>p.reserved).length;
   const lapsed = products.filter(p=>p.lapsed).length;
