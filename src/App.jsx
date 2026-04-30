@@ -1,30 +1,30 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
-import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct } from "./services/database";
+import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct, subscribeToProducts, subscribeToReservations } from "./services/database";
 import { getAIDiscountReasoning, getCustomerRecommendation } from "./utils/groqAI";
 import { getCurrentPosition, getDistanceToShop, DEMO_LOCATIONS } from "./utils/geolocation";
 
 /* ─── COLOUR TOKENS ──────────────────────────────────── */
 const C = {
   // Customer palette
-  custBg: "#f2efe7",
-  custAccent: "#b8004a",
-  custAccentLight: "#fce8f0",
-  custAccentDark: "#8a0037",
+  custBg: "#f8fafc", // Cool slate 50
+  custAccent: "#e11d48", // Vibrant Rose
+  custAccentLight: "#ffe4e6",
+  custAccentDark: "#be123c",
   // Shopkeeper palette
-  shopBg: "#e4ddd3",
-  shopAccent: "#00a19b",
-  shopAccentLight: "#e0f5f4",
-  shopAccentDark: "#007a75",
+  shopBg: "#f0fdfa", // Very light teal background
+  shopAccent: "#0d9488", // Vibrant Teal
+  shopAccentLight: "#ccfbf1",
+  shopAccentDark: "#0f766e",
   // Shared
   white: "#ffffff",
-  ink: "#1a1612",
-  inkMuted: "#6b5e52",
-  inkFaint: "#c4b5aa",
-  cream: "#faf7f2",
-  red: "#c0392b", redLight: "#fdecea",
-  amber: "#d97706", amberLight: "#fef3c7",
-  green: "#15803d", greenLight: "#dcfce7",
+  ink: "#0f172a", // Slate 900
+  inkMuted: "#64748b", // Slate 500
+  inkFaint: "#e2e8f0", // Slate 200
+  cream: "#f1f5f9", // Slate 100
+  red: "#ef4444", redLight: "#fee2e2",
+  amber: "#f59e0b", amberLight: "#fef3c7",
+  green: "#10b981", greenLight: "#d1fae5",
 };
 
 /* ─── GLOBAL STYLE ───────────────────────────────────── */
@@ -78,7 +78,6 @@ function normalizeDeal(row) {
     mrp: Number(row.mrp),
     discount: Number(row.discount),
     store: row.store || "Local Store",
-    distance: row.distance || "nearby",
     daysLeft: Number(row.days_left ?? 0),
     emoji: EMOJI_MAP[row.category] || "📦",
     reserved: row.is_reserved || false,
@@ -141,9 +140,13 @@ function discountedPrice(mrp, pct) { return Math.round(mrp * (1 - pct/100)); }
 
 /* ─── SHARED SMALL COMPONENTS ────────────────────────── */
 const LogoBox = ({ accent }) => (
-  <div style={{ width:110, height:36, border:`2px dashed ${accent}40`, borderRadius:8,
-    display:"flex", alignItems:"center", justifyContent:"center" }}>
-    <span style={{ fontSize:11, color:`${accent}80`, fontFamily:"'Syne',sans-serif", fontWeight:700, letterSpacing:"0.08em" }}>LOGO</span>
+  <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+    <div style={{ width:38, height:38, background: `linear-gradient(135deg, ${accent}, ${accent}99)`, borderRadius:12,
+      display:"flex", alignItems:"center", justifyContent:"center", color:C.white, fontWeight:800, fontSize:22,
+      boxShadow:`0 4px 12px ${accent}40` }}>
+      D
+    </div>
+    <span style={{ fontSize:24, color:C.ink, fontFamily:"'Syne',sans-serif", fontWeight:800, letterSpacing:"-0.03em" }}>Dealify</span>
   </div>
 );
 
@@ -229,6 +232,8 @@ function LoginModal({ role, onLogin, onClose }) {
               finalShopName = existing.shop_name;
               finalLocation = existing.location;
               finalLicence = existing.licence_number;
+              // Provide existing coordinates to the frontend session
+              geo = { latitude: existing.latitude, longitude: existing.longitude };
             } else {
               // mode === "signup"
               if (existing) {
@@ -236,14 +241,21 @@ function LoginModal({ role, onLogin, onClose }) {
                 setLoading(false);
                 return;
               }
+              // Get shop location for map
+              geo = await getCurrentPosition();
               const shop = await findOrCreateShop({
                 owner_name: username.trim(),
                 shop_name: shopName.trim(),
                 licence_number: licenceNumber.trim() || null,
                 location: location.trim() || null,
+                latitude: geo?.latitude || null,
+                longitude: geo?.longitude || null,
               });
               dbId = shop.id;
             }
+          } else {
+             // Mock fallback
+             if (mode === "signup") geo = await getCurrentPosition();
           }
         } else {
           geo = await getCurrentPosition();
@@ -388,12 +400,15 @@ function LoginModal({ role, onLogin, onClose }) {
 /* ─── LANDING PAGE ───────────────────────────────────── */
 function LandingPage({ onSelectRole }) {
   return (
-    <div style={{ minHeight:"100vh", background:C.cream, display:"flex", flexDirection:"column" }}>
+    <div style={{ minHeight:"100vh", background:"linear-gradient(135deg, #fefefb 0%, #e8f5e9 100%)", display:"flex", flexDirection:"column", position:"relative", overflow:"hidden" }}>
+      {/* Decorative background waves/shapes */}
+      <div style={{ position:"absolute", bottom:-100, left:0, right:0, height:300, 
+        background:"radial-gradient(ellipse at 50% 100%, #d4ecd1 0%, transparent 70%)", zIndex:0 }}></div>
       {/* Navbar */}
-      <nav style={{ background:C.white, borderBottom:`1px solid #e8e0d8`, padding:"0 32px",
-        height:64, display:"flex", alignItems:"center", justifyContent:"space-between",
-        position:"sticky", top:0, zIndex:50 }}>
-        <LogoBox accent={C.ink} />
+      <nav style={{ background:"transparent", padding:"16px 48px",
+        height:100, display:"flex", alignItems:"center", justifyContent:"space-between",
+        position:"relative", zIndex:50 }}>
+        <img src="/logo.png" alt="Dealify" style={{ height: 60, objectFit: "contain", mixBlendMode: "multiply" }} />
         <div style={{ display:"flex", gap:12, alignItems:"center" }}>
           <Btn onClick={()=>onSelectRole("customer")} color={C.custAccent} bg={C.custAccentLight}
             style={{ border:`1.5px solid ${C.custAccent}33` }}>
@@ -407,53 +422,80 @@ function LandingPage({ onSelectRole }) {
 
       {/* Hero */}
       <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center",
-        justifyContent:"center", padding:"60px 24px", textAlign:"center" }}>
-        <div className="fade-in" style={{ maxWidth:600 }}>
-          <div style={{ fontSize:13, fontWeight:700, letterSpacing:"0.12em", color:C.shopAccent,
-            textTransform:"uppercase", marginBottom:16 }}>Hyperlocal · Real-time · Neighbourhood</div>
-          <h1 style={{ fontSize:"clamp(36px,6vw,58px)", fontWeight:800, lineHeight:1.1,
-            color:C.ink, marginBottom:20 }}>
-            Fresh deals.<br />
-            <span style={{ color:C.custAccent }}>Zero waste.</span><br />
-            Walking distance.
-          </h1>
-          <p style={{ fontSize:17, color:C.inkMuted, lineHeight:1.7, marginBottom:36, maxWidth:480, margin:"0 auto 36px" }}>
-            KiranaDeals connects neighbourhood shopkeepers with nearby customers — turning near-expiry products into real savings for everyone.
-          </p>
+        justifyContent:"center", padding:"60px 24px" }}>
+        <div className="fade-in" style={{ maxWidth:1100, display:"flex", flexWrap:"wrap", alignItems:"center", gap:60, justifyContent:"center" }}>
+          
+          <div style={{ flex:"1 1 400px", textAlign:"left", position:"relative", zIndex:10 }}>
+            <div style={{ fontSize:13, fontWeight:800, letterSpacing:"0.15em", color:"#2e7d32",
+              textTransform:"uppercase", marginBottom:20 }}>Hyperlocal · Real-time · Neighbourhood</div>
+            <h1 style={{ fontSize:"clamp(46px,7vw,72px)", fontWeight:800, lineHeight:1.15,
+              color:"#112a23", marginBottom:24, letterSpacing:"-0.02em" }}>
+              Fresh deals.<br />
+              <span style={{ color:"#2e7d32" }}>Zero waste.</span><br />
+              Walking distance.
+            </h1>
+            <p style={{ fontSize:18, color:"#37474f", lineHeight:1.7, marginBottom:36, maxWidth:500, fontWeight:500 }}>
+              Dealify connects neighbourhood shopkeepers with nearby customers — turning near-expiry products into <span style={{color:"#2e7d32", fontWeight:700}}>real savings</span> for everyone.
+            </p>
+          </div>
+
+          <div style={{ flex:"1 1 400px", display:"flex", justifyContent:"center", position:"relative", zIndex:10 }}>
+             {/* Enhanced soft glowing backdrop */}
+             <div style={{ position:"absolute", top:"5%", left:"5%", right:"5%", bottom:"5%", 
+               background:`radial-gradient(circle, #81c784 0%, transparent 65%)`, filter:"blur(60px)", zIndex:0, opacity:0.6 }}></div>
+             
+             <img src="/hero.png" alt="Hyperlocal Shopping" style={{ 
+               width:"110%", maxWidth:650, objectFit: "contain", mixBlendMode: "multiply",
+               position: "relative", zIndex: 1
+             }} />
+          </div>
+
         </div>
 
         {/* Stats row */}
-        <div className="fade-in" style={{ display:"flex", gap:32, marginTop:64, flexWrap:"wrap", justifyContent:"center" }}>
-          {[["2,400+","Kirana stores"],["₹18L","Losses prevented"],["340 kg","Food saved"],["4 min","Avg deal pickup"]].map(([v,l])=>(
-            <div key={l} style={{ textAlign:"center" }}>
-              <div style={{ fontSize:28, fontFamily:"'Syne',sans-serif", fontWeight:800, color:C.ink }}>{v}</div>
-              <div style={{ fontSize:13, color:C.inkMuted, marginTop:2 }}>{l}</div>
+        <div className="fade-in" style={{ display:"flex", gap:36, marginTop:80, flexWrap:"wrap", justifyContent:"center",
+          background:C.white, padding:"28px 48px", borderRadius:24, boxShadow:"0 12px 40px rgba(0,0,0,0.06)", position:"relative", zIndex:10 }}>
+          {[
+            { v:"2,400+", l:"Kirana stores connected", icon:"🏪", bg:"#e8f5e9", col:"#2e7d32" },
+            { v:"₹18L", l:"Losses prevented", icon:"🛡️", bg:"#ffebee", col:"#c62828" },
+            { v:"340 kg", l:"Food saved", icon:"🍃", bg:"#e8f5e9", col:"#2e7d32" },
+            { v:"4 min", l:"Avg deal pickup", icon:"⏱️", bg:"#ffebee", col:"#c62828" }
+          ].map((c)=>(
+            <div key={c.l} style={{ display:"flex", alignItems:"center", gap:16, padding:"0 12px" }}>
+              <div style={{ width:56, height:56, borderRadius:"50%", background:c.bg, color:c.col,
+                display:"flex", alignItems:"center", justifyContent:"center", fontSize:24 }}>
+                {c.icon}
+              </div>
+              <div style={{ textAlign:"left" }}>
+                <div style={{ fontSize:28, fontFamily:"'Syne',sans-serif", fontWeight:800, color:C.ink }}>{c.v}</div>
+                <div style={{ fontSize:13, color:C.inkMuted, marginTop:2, maxWidth:90 }}>{c.l}</div>
+              </div>
             </div>
           ))}
         </div>
 
         {/* Role cards */}
-        <div style={{ display:"flex", gap:20, marginTop:60, maxWidth:700, width:"100%", flexWrap:"wrap", justifyContent:"center" }}>
+        <div style={{ display:"flex", gap:24, marginTop:60, maxWidth:860, width:"100%", flexWrap:"wrap", justifyContent:"center", position:"relative", zIndex:10 }}>
           {[
             { role:"shopkeeper", icon:"🏪", title:"For Shopkeepers", accent:C.shopAccent, bg:C.shopAccentLight, pts:["Upload near-expiry products in 30s","AI suggests optimal discount","Live on map instantly","Track reservations & queue"] },
             { role:"customer", icon:"🛍️", title:"For Customers", accent:C.custAccent, bg:C.custAccentLight, pts:["See deals within 2km","Reserve for 20 minutes","Walk in, show app, save money","Real savings, no delivery wait"] },
           ].map(c=>(
-            <div key={c.role} onClick={()=>onSelectRole(c.role)} style={{ background:C.white, borderRadius:18, padding:28,
-              flex:1, minWidth:280, cursor:"pointer", transition:"all 0.2s",
-              border:`1.5px solid ${c.accent}30`, boxShadow:"0 2px 12px rgba(0,0,0,0.06)" }}
-              onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-3px)";e.currentTarget.style.boxShadow=`0 8px 24px ${c.accent}25`}}
-              onMouseLeave={e=>{e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 2px 12px rgba(0,0,0,0.06)"}}>
-              <div style={{ fontSize:36, marginBottom:12 }}>{c.icon}</div>
-              <h3 style={{ fontSize:18, fontWeight:700, color:c.accent, marginBottom:12 }}>{c.title}</h3>
-              <ul style={{ listStyle:"none", display:"flex", flexDirection:"column", gap:8 }}>
+            <div key={c.role} onClick={()=>onSelectRole(c.role)} style={{ background:C.white, borderRadius:20, padding:"36px",
+              flex:1, minWidth:320, cursor:"pointer", transition:"all 0.2s",
+              border:`1.5px solid ${c.accent}25`, boxShadow:"0 8px 30px rgba(0,0,0,0.04)" }}
+              onMouseEnter={e=>{e.currentTarget.style.transform="translateY(-4px)";e.currentTarget.style.boxShadow=`0 16px 40px ${c.accent}20`}}
+              onMouseLeave={e=>{e.currentTarget.style.transform="translateY(0)";e.currentTarget.style.boxShadow="0 8px 30px rgba(0,0,0,0.04)"}}>
+              <div style={{ fontSize:42, marginBottom:16 }}>{c.icon}</div>
+              <h3 style={{ fontSize:22, fontWeight:700, color:c.accent, marginBottom:20 }}>{c.title}</h3>
+              <ul style={{ listStyle:"none", display:"flex", flexDirection:"column", gap:14 }}>
                 {c.pts.map(p=>(
-                  <li key={p} style={{ fontSize:14, color:C.inkMuted, display:"flex", gap:8, alignItems:"flex-start" }}>
+                  <li key={p} style={{ fontSize:16, color:C.inkMuted, display:"flex", gap:10, alignItems:"flex-start" }}>
                     <span style={{ color:c.accent, fontWeight:700 }}>✓</span>{p}
                   </li>
                 ))}
               </ul>
-              <div style={{ marginTop:18, background:c.bg, color:c.accent, padding:"9px 16px",
-                borderRadius:10, fontSize:14, fontWeight:700, textAlign:"center" }}>
+              <div style={{ marginTop:28, background:c.bg, color:c.accent, padding:"12px 16px",
+                borderRadius:12, fontSize:15, fontWeight:700, textAlign:"center", border:`1px solid ${c.accent}30` }}>
                 Login / Sign Up →
               </div>
             </div>
@@ -468,36 +510,56 @@ function LandingPage({ onSelectRole }) {
 function ShopkeeperDashboard({ user, onLogout }) {
   const [tab, setTab] = useState("dashboard");
   const [products, setProducts] = useState(MOCK_SHOP_PRODUCTS);
-  const [shopId, setShopId] = useState(null);
+  const [shopId, setShopId] = useState(user.shopId || null);
 
-  useEffect(()=>{
-    let ignore = false;
-
-    async function loadProducts() {
-      try {
-        const data = await listProducts();
-        if (!ignore && data.length > 0) setProducts(data.map(normalizeProduct));
-      } catch (error) {
-        console.error(error);
-      }
+  // Load only THIS shop's products from DB (owner sees only their inventory)
+  const loadProducts = useCallback(async (sid) => {
+    const id = sid || shopId;
+    try {
+      const data = await listProducts(id);
+      if (data.length > 0) setProducts(data.map(normalizeProduct));
+    } catch (error) {
+      console.error("Error loading shopkeeper products:", error);
     }
+  }, [shopId]);
 
-    loadProducts();
-    return () => { ignore = true; };
-  }, []);
+  useEffect(() => {
+    if (shopId) loadProducts(shopId);
+  }, [shopId, loadProducts]);
+
+  // Subscribe to real-time reservation updates so owner sees when customers reserve
+  useEffect(() => {
+    if (!shopId) return;
+    const unsubscribe = subscribeToReservations((payload) => {
+      console.log("Shopkeeper got reservation update:", payload);
+      loadProducts(shopId);
+    });
+    return unsubscribe;
+  }, [shopId, loadProducts]);
 
   async function ensureShop() {
     if (shopId) return shopId;
 
-    const shop = await createShop({
-      owner_name: user.name || "Shopkeeper",
-      shop_name: user.shop || "My Store",
-      licence_number: user.licenceNumber || null,
-      location: user.location || null,
-    });
+    console.log("ensureShop - user info:", user);
 
-    setShopId(shop.id);
-    return shop.id;
+    try {
+      const shop = await createShop({
+        owner_name: user.name || "Shopkeeper",
+        shop_name: user.shop || "My Store",
+        licence_number: user.licenceNumber || null,
+        location: user.location || null,
+      });
+
+      console.log("ensureShop - created shop:", shop);
+      if (!shop || !shop.id) {
+        throw new Error("Shop creation failed - no shop ID returned");
+      }
+      setShopId(shop.id);
+      return shop.id;
+    } catch (err) {
+      console.error("ensureShop error:", err);
+      throw err;
+    }
   }
 
   return (
@@ -537,7 +599,6 @@ function ShopkeeperDashboard({ user, onLogout }) {
 }
 
 function ShopDashboard({ products, user, accent, accentLight }) {
-  const active = products.filter(p=>!p.lapsed).length;
   const reserved = products.filter(p=>p.reserved).length;
   const lapsed = products.filter(p=>p.lapsed).length;
   const saved = products.reduce((s,p)=>s + Math.round(p.mrp * p.discount / 100), 0);
@@ -547,19 +608,18 @@ function ShopDashboard({ products, user, accent, accentLight }) {
       <h2 style={{ fontSize:26, fontWeight:800, marginBottom:6 }}>Good morning, {user.name.split('_')[0].charAt(0).toUpperCase() + user.name.split('_')[0].slice(1)} 👋</h2>
       <p style={{ color:C.inkMuted, marginBottom:24 }}>Here's your store overview for today.</p>
       <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(170px,1fr))", gap:14, marginBottom:32 }}>
-        <StatCard label="Active Listings" value={active} sub="Live on map right now" accent={accent} />
         <StatCard label="Reserved" value={reserved} sub="Customers on their way" accent={C.amber} />
         <StatCard label="Lapsed Reservations" value={lapsed} sub="Relisted automatically" accent={C.red} />
         <StatCard label="Potential Loss Saved" value={`₹${saved}`} sub="via discounts today" accent={C.green} />
       </div>
 
-      <h3 style={{ fontSize:17, fontWeight:700, marginBottom:14 }}>Active listings</h3>
+      <h3 style={{ fontSize:17, fontWeight:700, marginBottom:14 }}>Your products</h3>
       <div style={{ display:"flex", flexDirection:"column", gap:10 }}>
         {products.map(p=>(
           <div key={p.id} style={{ background:C.white, borderRadius:14, padding:"14px 18px",
             display:"flex", alignItems:"center", gap:16, border:`1px solid ${accent}15`,
             boxShadow:"0 1px 4px rgba(0,0,0,0.05)" }}>
-            <div style={{ fontSize:28, width:44, textAlign:"center" }}>{p.emoji || CATEGORY_EMOJI[p.category] || "📦"}</div>
+            <div style={{ fontSize:28, width:44, textAlign:"center" }}>{p.emoji || EMOJI_MAP[p.category] || "📦"}</div>
             <div style={{ flex:1 }}>
               <div style={{ fontWeight:700, fontSize:15 }}>{p.name}</div>
               <div style={{ fontSize:13, color:C.inkMuted }}>{p.category} · {p.qty} in stock</div>
@@ -569,8 +629,6 @@ function ShopDashboard({ products, user, accent, accentLight }) {
               <div style={{ fontSize:12, color:C.inkMuted, textDecoration:"line-through" }}>₹{p.mrp}</div>
             </div>
             <UrgencyBadge days={p.daysLeft} />
-            {p.reserved && <Badge color={C.amber} bg={C.amberLight}>🔒 Reserved</Badge>}
-            {p.lapsed && <Badge color={C.red} bg={C.redLight}>⚠ Lapsed</Badge>}
           </div>
         ))}
       </div>
@@ -580,12 +638,28 @@ function ShopDashboard({ products, user, accent, accentLight }) {
 
 function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) {
   const [form, setForm] = useState({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" });
+  const [image, setImage] = useState(null);
+  const [imagePreview, setImagePreview] = useState(null);
   const [aiResult, setAiResult] = useState(null);
   const [submitted, setSubmitted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [dbError, setDbError] = useState("");
 
   const today = new Date().toISOString().split("T")[0];
+
+  function handleImageChange(e) {
+    const file = e.target.files[0];
+    if (file) {
+      if (file.size > 5 * 1024 * 1024) {
+        alert("File size must be less than 5MB");
+        return;
+      }
+      setImage(file);
+      const reader = new FileReader();
+      reader.onloadend = () => setImagePreview(reader.result);
+      reader.readAsDataURL(file);
+    }
+  }
 
   function calcDays(expiry) {
     if (!expiry) return null;
@@ -643,7 +717,12 @@ function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) 
 
     try {
       const shopId = await ensureShop();
-      const savedProduct = await createProduct({
+      console.log("Shop ID for product:", shopId);
+      if (!shopId) {
+        throw new Error("No shop ID obtained!");
+      }
+      
+      const productData = {
         shop_id: shopId,
         name: form.name,
         category: form.category,
@@ -652,11 +731,20 @@ function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) 
         expiry_date: form.expiry,
         quantity: Number(form.qty) || 1,
         fssai_number: form.fssai,
-      });
+        image_url: imagePreview,
+      };
+      console.log("Creating product with data:", productData);
+      
+      const savedProduct = await createProduct(productData);
+      console.log("Created product:", savedProduct);
+      
+      if (!savedProduct) {
+        throw new Error("Product creation returned no data");
+      }
 
       setProducts(p=>[normalizeProduct(savedProduct),...p]);
     } catch (error) {
-      console.error(error);
+      console.error("Error creating product:", error);
       setDbError("Saved locally, but Supabase is not ready yet. Run the SQL schema in Supabase and try again.");
       setProducts(p=>[localProduct,...p]);
     } finally {
@@ -664,7 +752,13 @@ function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) 
     }
 
     setSubmitted(true);
-    setTimeout(()=>{ setSubmitted(false); setForm({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" }); setAiResult(null); }, 3000);
+    setTimeout(()=>{ 
+      setSubmitted(false); 
+      setForm({ name:"", category:"Dairy", mrp:"", expiry:"", qty:"1", customDiscount:"", fssai:"" }); 
+      setAiResult(null); 
+      setImage(null);
+      setImagePreview(null);
+    }, 3000);
   }
 
   const inp = (field) => ({
@@ -727,15 +821,32 @@ function ShopUpload({ products, setProducts, ensureShop, accent, accentLight }) 
               <input {...inp("customDiscount")} type="number" min="1" max="90" placeholder="e.g. 30" />
             </div>
 
-            {/* Photo upload placeholder */}
+            {/* Photo upload */}
             <div style={{ gridColumn:"span 2" }}>
               <label style={{ fontSize:13, fontWeight:600, color:C.inkMuted, display:"block", marginBottom:5 }}>Product Photo</label>
-              <div style={{ border:`2px dashed ${accent}40`, borderRadius:12, padding:"20px", textAlign:"center",
-                background:accentLight, cursor:"pointer" }}>
-                <div style={{ fontSize:28, marginBottom:6 }}>📷</div>
-                <div style={{ fontSize:13, color:accent, fontWeight:600 }}>Tap to upload / use camera</div>
-                <div style={{ fontSize:12, color:C.inkMuted, marginTop:3 }}>JPG, PNG — max 5MB</div>
-              </div>
+              <input 
+                type="file" 
+                accept="image/jpeg,image/png" 
+                onChange={handleImageChange}
+                style={{ display: "none" }}
+                id="product-image"
+              />
+              {imagePreview ? (
+                <div style={{ position: "relative", borderRadius:12, overflow:"hidden" }}>
+                  <img src={imagePreview} alt="Preview" style={{ width:"100%", height:150, objectFit:"cover" }} />
+                  <button 
+                    onClick={() => { setImage(null); setImagePreview(null); }}
+                    style={{ position:"absolute", top:8, right:8, background:"rgba(0,0,0,0.6)", color:"white", border:"none", borderRadius:20, width:24, height:24, cursor:"pointer", fontSize:14 }}
+                  >✕</button>
+                </div>
+              ) : (
+                <label htmlFor="product-image" style={{ border:`2px dashed ${accent}40`, borderRadius:12, padding:"20px", textAlign:"center",
+                  background:accentLight, cursor:"pointer", display:"block" }}>
+                  <div style={{ fontSize:28, marginBottom:6 }}>📷</div>
+                  <div style={{ fontSize:13, color:accent, fontWeight:600 }}>Tap to upload / use camera</div>
+                  <div style={{ fontSize:12, color:C.inkMuted, marginTop:3 }}>JPG, PNG — max 5MB</div>
+                </label>
+              )}
             </div>
           </div>
 
@@ -841,7 +952,7 @@ function ShopExpiring({ products, setProducts, accent, accentLight }) {
             <div key={p.id} className="fade-in" style={{ background:C.white, borderRadius:16, padding:"18px 22px",
               boxShadow:"0 1px 6px rgba(0,0,0,0.07)", border: p.daysLeft<=1 ? `1.5px solid ${C.red}30` : p.lapsed ? `1.5px solid ${C.amber}30` : `1px solid ${accent}15` }}>
               <div style={{ display:"flex", alignItems:"flex-start", gap:14, flexWrap:"wrap" }}>
-                <div style={{ fontSize:34 }}>{p.emoji || CATEGORY_EMOJI[p.category] || "📦"}</div>
+                <div style={{ fontSize:34 }}>{p.emoji || EMOJI_MAP[p.category] || "📦"}</div>
                 <div style={{ flex:1, minWidth:200 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:10, flexWrap:"wrap", marginBottom:4 }}>
                     <span style={{ fontSize:16, fontWeight:700 }}>{p.name}</span>
@@ -900,7 +1011,9 @@ function CustomerHome({ user, onLogout }) {
   const loadDeals = useCallback(async () => {
     try {
       const data = await listActiveDeals();
+      console.log("Customer - raw deals from DB:", data);
       let normalized = data.length > 0 ? data.map(normalizeDeal) : MOCK_DEALS;
+      console.log("Customer - normalized deals:", normalized);
       
       // Calculate real distances if we have user location
       if (userLoc) {
@@ -912,11 +1025,11 @@ function CustomerHome({ user, onLogout }) {
           return { ...d, distanceMeters: 999999 };
         });
       }
-
+      
       setDeals(normalized);
       setDbStatus(data.length > 0 ? "live" : "empty");
     } catch (error) {
-      console.error(error);
+      console.error("Error fetching active deals:", error);
       setDeals(MOCK_DEALS);
       setDbStatus("mock");
     }
@@ -924,6 +1037,16 @@ function CustomerHome({ user, onLogout }) {
 
   useEffect(()=>{
     loadDeals();
+  }, [loadDeals]);
+
+  // ✅ Real-time: Customer sees new products as soon as owner uploads them
+  useEffect(() => {
+    const unsubscribe = subscribeToProducts((payload) => {
+      console.log("🛍️ Customer received real-time product update:", payload.eventType);
+      // Reload deals whenever a product is inserted, updated, or deleted
+      loadDeals();
+    });
+    return unsubscribe;
   }, [loadDeals]);
 
   useEffect(()=>{
@@ -959,6 +1082,19 @@ function CustomerHome({ user, onLogout }) {
       }
     }
   }
+  // 🤖 AI-powered recommendation for customer
+  const [aiRec, setAiRec] = useState(null);
+  const [aiLoading, setAiLoading] = useState(false);
+
+  useEffect(() => {
+    if (deals.length === 0 || deals === MOCK_DEALS) return;
+    let cancelled = false;
+    setAiLoading(true);
+    getCustomerRecommendation(deals).then(rec => {
+      if (!cancelled && rec) setAiRec(rec);
+    }).finally(() => { if (!cancelled) setAiLoading(false); });
+    return () => { cancelled = true; };
+  }, [deals]);
 
   return (
     <div style={{ minHeight:"100vh", background:C.custBg }}>
@@ -992,6 +1128,44 @@ function CustomerHome({ user, onLogout }) {
       </nav>
 
       <div style={{ maxWidth:1000, margin:"0 auto", padding:"28px 20px" }}>
+        {/* 🤖 AI Smart Assistant Banner */}
+        {(aiRec || aiLoading) && (
+          <div className="fade-in" style={{
+            background: `linear-gradient(135deg, ${C.custAccent}08 0%, ${C.custAccentLight} 50%, #f5e6ff20 100%)`,
+            borderRadius: 16, padding: "18px 22px", marginBottom: 22,
+            border: `1.5px solid ${C.custAccent}20`,
+            boxShadow: `0 2px 16px ${C.custAccent}10`,
+          }}>
+            {aiLoading ? (
+              <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                <span className="spin" style={{ display:"inline-block", width:16, height:16, border:`2px solid ${C.custAccent}`, borderTopColor:"transparent", borderRadius:"50%" }} />
+                <span style={{ fontSize:13, color:C.custAccent, fontWeight:600 }}>AI is analyzing deals near you...</span>
+              </div>
+            ) : aiRec && (
+              <div>
+                <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:10 }}>
+                  <span style={{ fontSize:20 }}>🤖</span>
+                  <span style={{ fontSize:12, fontWeight:700, letterSpacing:"0.08em", color:C.custAccent, textTransform:"uppercase" }}>AI Smart Assistant — Powered by Groq</span>
+                </div>
+                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:14 }}>
+                  <div style={{ background:C.white, borderRadius:12, padding:"12px 14px", border:`1px solid ${C.custAccent}15` }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:C.custAccent, marginBottom:4 }}>👋 GREETING</div>
+                    <div style={{ fontSize:13, color:C.ink, lineHeight:1.5 }}>{aiRec.greeting}</div>
+                  </div>
+                  <div style={{ background:C.white, borderRadius:12, padding:"12px 14px", border:`1px solid ${C.green}20` }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:C.green, marginBottom:4 }}>⭐ TOP PICK</div>
+                    <div style={{ fontSize:13, color:C.ink, lineHeight:1.5 }}>{aiRec.topPick}</div>
+                  </div>
+                  <div style={{ background:C.white, borderRadius:12, padding:"12px 14px", border:`1px solid ${C.amber}20` }}>
+                    <div style={{ fontSize:11, fontWeight:700, color:C.amber, marginBottom:4 }}>💡 SAVING TIP</div>
+                    <div style={{ fontSize:13, color:C.ink, lineHeight:1.5 }}>{aiRec.savingTip}</div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
         {tab==="deals" && <CustomerDeals deals={deals} userLoc={userLoc} reserved={reserved} timers={timers} onReserve={reserve} dbStatus={dbStatus} />}
         {tab==="search" && <CustomerSearch deals={deals} reserved={reserved} timers={timers} onReserve={reserve} />}
       </div>
@@ -1059,98 +1233,179 @@ function DealCard({ deal, reserved, timer, onReserve }) {
     </div>
   );
 }
-function RealMap({ deals, center }) {
+function RealMap({ deals, center, expanded, onToggleExpand }) {
   const mapRef = useRef(null);
   const mapInstance = useRef(null);
   const markersLayer = useRef(null);
+  const radiusLayer = useRef(null);
 
   useEffect(() => {
     if (!mapRef.current || mapInstance.current) return;
-
-    // Use window.L since it's loaded from CDN
     const L = window.L;
     if (!L) return;
 
-    mapInstance.current = L.map(mapRef.current).setView([center.latitude, center.longitude], 14);
-    L.tileLayer('https://{s}.tile.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
-      attribution: '© OpenStreetMap contributors'
+    mapInstance.current = L.map(mapRef.current, {
+      zoomControl: false,
+      attributionControl: false,
+    }).setView([center.latitude, center.longitude], 14);
+
+    // Stylish dark-tinted map tiles (free, no API key)
+    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+      attribution: '© <a href="https://openstreetmap.org">OSM</a> © <a href="https://carto.com">CARTO</a>',
+      maxZoom: 19,
     }).addTo(mapInstance.current);
 
+    // Custom zoom control position
+    L.control.zoom({ position: 'bottomright' }).addTo(mapInstance.current);
+    L.control.attribution({ position: 'bottomleft', prefix: false }).addTo(mapInstance.current);
+
     markersLayer.current = L.layerGroup().addTo(mapInstance.current);
+    radiusLayer.current = L.layerGroup().addTo(mapInstance.current);
 
     return () => {
-      if (mapInstance.current) {
-        mapInstance.current.remove();
-        mapInstance.current = null;
-      }
+      if (mapInstance.current) { mapInstance.current.remove(); mapInstance.current = null; }
     };
   }, [center]);
+
+  // Invalidate size when expanded/collapsed
+  useEffect(() => {
+    if (mapInstance.current) {
+      setTimeout(() => mapInstance.current.invalidateSize(), 150);
+    }
+  }, [expanded]);
 
   useEffect(() => {
     const L = window.L;
     if (!L || !mapInstance.current || !markersLayer.current) return;
 
     markersLayer.current.clearLayers();
+    radiusLayer.current.clearLayers();
 
-    // Group deals by shop location
+    // 2km radius circle around user
+    L.circle([center.latitude, center.longitude], {
+      radius: 2000, color: C.custAccent, fillColor: C.custAccent,
+      fillOpacity: 0.06, weight: 1.5, dashArray: '6,6', opacity: 0.4,
+    }).addTo(radiusLayer.current);
+
+    // Group deals by shop
     const storeMarkers = {};
     deals.forEach(deal => {
       if (deal.latitude && deal.longitude) {
         const key = `${deal.latitude},${deal.longitude}`;
         if (!storeMarkers[key]) {
-          storeMarkers[key] = {
-            lat: deal.latitude,
-            lng: deal.longitude,
-            store: deal.store,
-            deals: []
-          };
+          storeMarkers[key] = { lat: deal.latitude, lng: deal.longitude, store: deal.store, deals: [] };
         }
         storeMarkers[key].deals.push(deal);
       }
     });
 
+    const bounds = [[center.latitude, center.longitude]];
+
     Object.values(storeMarkers).forEach(site => {
+      bounds.push([site.lat, site.lng]);
       const urgency = Math.min(...site.deals.map(d => d.daysLeft));
       const color = urgency <= 1 ? C.red : urgency <= 3 ? C.amber : C.green;
-      
+      const bestPrice = Math.min(...site.deals.map(d => discountedPrice(d.mrp, d.discount)));
+      const totalDeals = site.deals.length;
+
       const icon = L.divIcon({
-        className: 'custom-div-icon',
-        html: `<div style="background-color: ${color}; width: 32px; height: 32px; border-radius: 50%; border: 2.5px solid white; display: flex; align-items: center; justify-content: center; color: white; font-weight: 800; font-size: 10px; box-shadow: 0 3px 8px rgba(0,0,0,0.25); font-family: Syne, sans-serif;">₹${Math.min(...site.deals.map(d => discountedPrice(d.mrp, d.discount)))}</div>`,
-        iconSize: [32, 32],
-        iconAnchor: [16, 16]
+        className: '',
+        html: `<div style="position:relative">
+          <div style="background:${color};width:40px;height:40px;border-radius:12px;border:2.5px solid white;display:flex;align-items:center;justify-content:center;color:white;font-weight:800;font-size:11px;box-shadow:0 4px 12px ${color}60;font-family:Syne,sans-serif;transition:transform .2s">₹${bestPrice}</div>
+          <div style="position:absolute;top:-6px;right:-6px;background:${C.custAccent};color:white;width:18px;height:18px;border-radius:50%;font-size:10px;font-weight:800;display:flex;align-items:center;justify-content:center;border:1.5px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.2)">${totalDeals}</div>
+        </div>`,
+        iconSize: [40, 40], iconAnchor: [20, 20],
       });
+
+      // Rich popup with deal list
+      const popupRows = site.deals.slice(0, 4).map(d => {
+        const dp = discountedPrice(d.mrp, d.discount);
+        const emoji = EMOJI_MAP[d.category] || '📦';
+        const urgCol = d.daysLeft <= 1 ? C.red : d.daysLeft <= 3 ? C.amber : C.green;
+        return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid #f0ebe5">
+          <span style="font-size:20px">${emoji}</span>
+          <div style="flex:1;min-width:0">
+            <div style="font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${d.name}</div>
+            <div style="font-size:11px;color:${C.inkMuted}">${d.category} · <span style="color:${urgCol};font-weight:700">${d.daysLeft}d left</span></div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-weight:800;color:${C.custAccent};font-size:14px">₹${dp}</div>
+            <div style="font-size:11px;color:${C.inkMuted};text-decoration:line-through">₹${d.mrp}</div>
+          </div>
+        </div>`;
+      }).join('');
+      const moreText = site.deals.length > 4 ? `<div style="text-align:center;font-size:11px;color:${C.custAccent};font-weight:700;padding-top:6px">+${site.deals.length - 4} more deals</div>` : '';
 
       L.marker([site.lat, site.lng], { icon })
         .addTo(markersLayer.current)
-        .bindPopup(`
-          <div style="font-family: DM Sans, sans-serif; padding: 4px">
-            <strong style="color: ${C.ink}">${site.store}</strong><br/>
-            <span style="font-size: 12px; color: ${C.inkMuted}">${site.deals.length} active deals</span>
+        .bindPopup(`<div style="font-family:'DM Sans',sans-serif;min-width:220px;max-width:280px">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding-bottom:8px;border-bottom:2px solid ${color}20">
+            <div style="background:${color};color:white;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px">🏪</div>
+            <div><strong style="font-size:14px;color:${C.ink}">${site.store}</strong><div style="font-size:11px;color:${C.inkMuted}">${totalDeals} deal${totalDeals>1?'s':''} · Best ₹${bestPrice}</div></div>
           </div>
-        `);
+          ${popupRows}${moreText}
+        </div>`, { maxWidth: 300, className: 'kirana-popup' });
     });
 
-    // User marker
+    // Pulsing user marker
     const userIcon = L.divIcon({
-      className: 'user-icon',
-      html: `<div style="background-color: ${C.custAccent}; width: 14px; height: 14px; border-radius: 50%; border: 2.5px solid white; box-shadow: 0 0 0 5px ${C.custAccent}30"></div>`,
-      iconSize: [14, 14],
-      iconAnchor: [7, 7]
+      className: '',
+      html: `<div style="position:relative;width:20px;height:20px">
+        <div style="position:absolute;inset:-8px;border-radius:50%;background:${C.custAccent}18;animation:pulse 2s infinite"></div>
+        <div style="width:20px;height:20px;border-radius:50%;background:${C.custAccent};border:3px solid white;box-shadow:0 2px 8px ${C.custAccent}50"></div>
+      </div>`,
+      iconSize: [20, 20], iconAnchor: [10, 10],
     });
-    L.marker([center.latitude, center.longitude], { icon: userIcon })
+    L.marker([center.latitude, center.longitude], { icon: userIcon, zIndexOffset: 1000 })
       .addTo(markersLayer.current)
-      .bindPopup("<strong>You are here</strong>");
+      .bindPopup(`<div style="font-family:'DM Sans',sans-serif;text-align:center;padding:4px">
+        <strong style="color:${C.custAccent}">📍 You are here</strong><br/>
+        <span style="font-size:12px;color:${C.inkMuted}">2km radius shown</span>
+      </div>`);
 
-    // Center map on user
-    mapInstance.current.panTo([center.latitude, center.longitude]);
-
+    // Fit bounds to show all markers
+    if (bounds.length > 1) {
+      mapInstance.current.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+    }
   }, [deals, center]);
 
-  return <div ref={mapRef} style={{ height: 320, borderRadius: 20, marginBottom: 24, zIndex: 5, border: `1px solid ${C.custAccent}20`, boxShadow: "0 4px 20px rgba(0,0,0,0.08)" }} />;
+  const mapHeight = expanded ? 560 : 340;
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <div ref={mapRef} style={{
+        height: mapHeight, borderRadius: 20, zIndex: 5, transition: 'height 0.3s ease',
+        border: `1.5px solid ${C.custAccent}20`, boxShadow: '0 4px 24px rgba(184,0,74,0.08)',
+      }} />
+      {/* Map controls overlay */}
+      <div style={{ position:'absolute', top:12, right:12, zIndex:10, display:'flex', flexDirection:'column', gap:6 }}>
+        <button onClick={onToggleExpand} style={{
+          background: C.white, border: `1px solid ${C.inkFaint}`, borderRadius: 10,
+          width: 36, height: 36, display: 'flex', alignItems: 'center', justifyContent: 'center',
+          cursor: 'pointer', boxShadow: '0 2px 8px rgba(0,0,0,0.1)', fontSize: 16,
+        }}>{expanded ? '🗕' : '⛶'}</button>
+      </div>
+      {/* Legend */}
+      <div style={{
+        position:'absolute', bottom:12, left:12, zIndex:10, background:'rgba(255,255,255,0.92)',
+        backdropFilter:'blur(8px)', borderRadius:10, padding:'8px 12px', fontSize:11,
+        display:'flex', gap:12, alignItems:'center', boxShadow:'0 2px 8px rgba(0,0,0,0.08)',
+        border:`1px solid ${C.inkFaint}40`,
+      }}>
+        {[['🔴','Today',C.red],['🟠','2-3 days',C.amber],['🟢','4+ days',C.green]].map(([e,l,c])=>(
+          <span key={l} style={{display:'flex',alignItems:'center',gap:3}}>
+            <span style={{width:8,height:8,borderRadius:4,background:c,display:'inline-block'}}/>{l}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function CustomerDeals({ deals, userLoc, reserved, timers, onReserve, dbStatus }) {
   const [sort, setSort] = useState("distance");
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [viewMode, setViewMode] = useState("both"); // 'both' | 'map' | 'list'
   const sorted = [...deals].sort((a,b)=>{
     if (sort==="discount") return b.discount - a.discount;
     if (sort==="expiry") return a.daysLeft - b.daysLeft;
@@ -1163,11 +1418,23 @@ function CustomerDeals({ deals, userLoc, reserved, timers, onReserve, dbStatus }
         <div>
           <h2 style={{ fontSize:24, fontWeight:800 }}>Deals Near You 📍</h2>
           <p style={{ color:C.inkMuted, fontSize:14, marginTop:2 }}>{userLoc ? "Showing based on your current location" : "Indiranagar, Bengaluru"} · {deals.length} deals nearby</p>
-          {dbStatus === "live" && <p style={{ color:C.green, fontSize:12, marginTop:4 }}>Connected to Supabase live data</p>}
+          {dbStatus === "live" && <p style={{ color:C.green, fontSize:12, marginTop:4 }}>🟢 Live data from shops near you</p>}
           {dbStatus === "mock" && <p style={{ color:C.amber, fontSize:12, marginTop:4 }}>Showing demo data until Supabase tables are created</p>}
           {dbStatus === "empty" && <p style={{ color:C.amber, fontSize:12, marginTop:4 }}>Supabase connected; showing demo cards until a product is uploaded</p>}
         </div>
-        <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+        <div style={{ display:"flex", gap:8, alignItems:"center", flexWrap:"wrap" }}>
+          {/* View mode toggle */}
+          <div style={{ display:"flex", background:C.cream, borderRadius:10, padding:3, marginRight:8 }}>
+            {[["both","🗺️+📋"],["map","🗺️ Map"],["list","📋 List"]].map(([v,l])=>(
+              <button key={v} onClick={()=>setViewMode(v)} style={{
+                background: viewMode===v ? C.white : "transparent",
+                color: viewMode===v ? C.custAccent : C.inkMuted,
+                border: "none", padding:"5px 10px", borderRadius:8, fontSize:12, fontWeight: viewMode===v ? 700 : 500,
+                cursor:"pointer", transition:"all 0.15s",
+                boxShadow: viewMode===v ? "0 1px 3px rgba(0,0,0,0.08)" : "none",
+              }}>{l}</button>
+            ))}
+          </div>
           <span style={{ fontSize:13, color:C.inkMuted }}>Sort:</span>
           {[["distance","📍 Distance"],["discount","💰 Discount"],["expiry","⏰ Expiry"]].map(([v,l])=>(
             <button key={v} onClick={()=>setSort(v)} style={{
@@ -1180,14 +1447,23 @@ function CustomerDeals({ deals, userLoc, reserved, timers, onReserve, dbStatus }
         </div>
       </div>
 
-      <RealMap deals={deals} center={userLoc || DEMO_LOCATIONS.center} />
-      <div style={{ height:20 }} />
+      {viewMode !== "list" && (
+        <RealMap
+          deals={deals}
+          center={userLoc || DEMO_LOCATIONS.center}
+          expanded={mapExpanded}
+          onToggleExpand={() => setMapExpanded(v => !v)}
+        />
+      )}
+      {viewMode !== "list" && <div style={{ height:20 }} />}
 
-      <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))", gap:16 }}>
-        {sorted.map(d=>(
-          <DealCard key={d.id} deal={d} reserved={reserved[d.id]} timer={timers[d.id]} onReserve={onReserve} />
-        ))}
-      </div>
+      {viewMode !== "map" && (
+        <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fill,minmax(220px,1fr))", gap:16 }}>
+          {sorted.map(d=>(
+            <DealCard key={d.id} deal={d} reserved={reserved[d.id]} timer={timers[d.id]} onReserve={onReserve} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -1204,7 +1480,7 @@ function CustomerSearch({ deals, reserved, timers, onReserve }) {
     const matchC = category==="All" || d.category===category;
     const matchD = d.discount >= minDiscount;
     return matchQ && matchC && matchD;
-  });
+  }).sort((a, b) => (a.distanceMeters || 999999) - (b.distanceMeters || 999999));
 
   return (
     <div className="fade-in">
@@ -1269,7 +1545,7 @@ function CustomerSearch({ deals, reserved, timers, onReserve }) {
 /* ─── README PAGE ────────────────────────────────────── */
 function ReadmePage({ onBack }) {
   const sections = [
-    { icon:"📌", title:"Project Overview", content:"KiranaDeals is a real-time hyperlocal web platform connecting small kirana shopkeepers with nearby customers by surfacing near-expiry products at AI-suggested discounts. Shopkeepers reduce losses and food waste; customers get genuine deals within walking distance. No delivery. No middlemen. Just fast, trust-based neighbourhood commerce." },
+    { icon:"📌", title:"Project Overview", content:"Dealify is a real-time hyperlocal web platform connecting small kirana shopkeepers with nearby customers by surfacing near-expiry products at AI-suggested discounts. Shopkeepers reduce losses and food waste; customers get genuine deals within walking distance. No delivery. No middlemen. Just fast, trust-based neighbourhood commerce." },
     { icon:"🏠", title:"Landing Page", content:"Entry point for all users. Completely blank content area — no deals shown before login. Top navbar has logo placeholder on the left and two role-based sign-in buttons on the right: 'Sign in as Customer' and 'Sign in as Shopkeeper'. Each opens a scoped modal." },
     { icon:"🏪", title:"Shopkeeper Dashboard", content:"Three tabs: Dashboard (stats overview), Upload Product (form with AI discount engine), Expiring Soon (live queue tracker). Colour palette: #e4ddd3 background with #00a19b teal accent throughout." },
     { icon:"📦", title:"Upload Product", content:"Form fields: product name, category, MRP, expiry date, photo upload, stock quantity, and optional custom discount. AI calculates discount based on days remaining, category (perishables get +5%), and quantity (>5 units get +3%). Shopkeeper can override at any time." },
@@ -1298,7 +1574,7 @@ function ReadmePage({ onBack }) {
           <div style={{ fontSize:13, fontWeight:700, letterSpacing:"0.1em", color:C.shopAccent,
             textTransform:"uppercase", marginBottom:12 }}>Documentation</div>
           <h1 style={{ fontSize:"clamp(32px,5vw,48px)", fontWeight:800, lineHeight:1.1, marginBottom:16 }}>
-            KiranaDeals
+            Dealify
           </h1>
           <p style={{ fontSize:18, color:C.inkMuted, lineHeight:1.7, marginBottom:12, fontStyle:"italic" }}>
             Giving India's neighbourhood kirana stores a fighting chance — one discounted product at a time.
@@ -1353,6 +1629,36 @@ function ReadmePage({ onBack }) {
   );
 }
 
+/* ─── ERROR BOUNDARY ─────────────────────────────────── */
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null, errorInfo: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  componentDidCatch(error, errorInfo) {
+    this.setState({ errorInfo });
+    console.error("React Error:", error, errorInfo);
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{ padding: 40, fontFamily: "sans-serif", background: "#fef2f2", color: "#991b1b", minHeight: "100vh" }}>
+          <h2>Application Crashed</h2>
+          <pre style={{ whiteSpace: "pre-wrap", background: "white", padding: 20, borderRadius: 8, border: "1px solid #fca5a5" }}>
+            {this.state.error && this.state.error.toString()}
+            <br/><br/>
+            {this.state.errorInfo && this.state.errorInfo.componentStack}
+          </pre>
+        </div>
+      );
+    }
+    return this.props.children; 
+  }
+}
+
 /* ─── ROOT APP ───────────────────────────────────────── */
 export default function App() {
   const [page, setPage] = useState("landing"); // landing | login | shopkeeper | customer | readme
@@ -1364,7 +1670,7 @@ export default function App() {
   function handleLogout() { setUser(null); setLoginRole(null); setPage("landing"); }
 
   return (
-    <>
+    <ErrorBoundary>
       <GlobalStyle />
       {page === "readme" && <ReadmePage onBack={()=>setPage(user ? user.role : "landing")} />}
       {page === "landing" && (
@@ -1403,6 +1709,6 @@ export default function App() {
           </div>
         </div>
       )}
-    </>
+    </ErrorBoundary>
   );
 }
