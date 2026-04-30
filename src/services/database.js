@@ -308,6 +308,44 @@ export async function releaseReservation(productId) {
   return data;
 }
 
+/** 
+ * Confirm a sale (customer collected the reserved item) 
+ * This decrements the product quantity and marks the reservation as collected.
+ */
+export async function confirmSale(productId) {
+  if (!productId) throw new Error("productId is required");
+  const supabase = getSupabaseClient();
+
+  // Mark reservation as collected
+  await supabase
+    .from("reservations")
+    .update({ status: "collected" })
+    .eq("product_id", productId)
+    .eq("status", "active");
+
+  // Get current quantity
+  const { data: productData, error: fetchError } = await supabase
+    .from("products")
+    .select("quantity")
+    .eq("id", productId)
+    .single();
+    
+  if (fetchError) throw fetchError;
+
+  // Decrement quantity and un-reserve
+  const newQty = Math.max(0, (productData.quantity || 1) - 1);
+  
+  const { data, error } = await supabase
+    .from("products")
+    .update({ is_reserved: false, quantity: newQty })
+    .eq("id", productId)
+    .select()
+    .single();
+
+  if (error) throw error;
+  return data;
+}
+
 /**
  * Fetch real-time platform statistics from the database
  */

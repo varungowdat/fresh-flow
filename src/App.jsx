@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
-import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct, subscribeToProducts, subscribeToReservations, getPlatformStats } from "./services/database";
+import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct, subscribeToProducts, subscribeToReservations, getPlatformStats, confirmSale } from "./services/database";
 import { getAIDiscountReasoning, getCustomerRecommendation } from "./utils/groqAI";
 import { getCurrentPosition, getDistanceToShop, DEMO_LOCATIONS } from "./utils/geolocation";
 
@@ -680,7 +680,27 @@ function ShopDashboard({ products, user, accent, accentLight }) {
               <div style={{ fontWeight:800, fontSize:16, color:accent }}>₹{discountedPrice(p.mrp,p.discount)}</div>
               <div style={{ fontSize:12, color:C.inkMuted, textDecoration:"line-through" }}>₹{p.mrp}</div>
             </div>
-            <UrgencyBadge days={p.daysLeft} />
+            {p.reserved ? (
+              <button 
+                onClick={async () => {
+                  try {
+                    await confirmSale(p.id);
+                    // It will auto-refresh via real-time subscription
+                  } catch (e) {
+                    alert("Failed to confirm sale");
+                  }
+                }}
+                style={{ 
+                  background: C.green, color: C.white, border: "none", 
+                  padding: "8px 14px", borderRadius: 8, fontWeight: 700, 
+                  cursor: "pointer", fontSize: 13, marginLeft: 10
+                }}
+              >
+                Confirm Sale (-1)
+              </button>
+            ) : (
+              <UrgencyBadge days={p.daysLeft} />
+            )}
           </div>
         ))}
       </div>
