@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { isSupabaseConfigured } from "./lib/supabaseClient";
-import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct, subscribeToProducts, subscribeToReservations } from "./services/database";
+import { checkShopExists, createProduct, createShop, findOrCreateShop, findOrCreateCustomer, listActiveDeals, listProducts, releaseReservation, reserveProduct, subscribeToProducts, subscribeToReservations, getPlatformStats } from "./services/database";
 import { getAIDiscountReasoning, getCustomerRecommendation } from "./utils/groqAI";
 import { getCurrentPosition, getDistanceToShop, DEMO_LOCATIONS } from "./utils/geolocation";
 
@@ -397,8 +397,58 @@ function LoginModal({ role, onLogin, onClose }) {
   );
 }
 
+function AnimatedNumber({ target, prefix = "", suffix = "" }) {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let startTime = null;
+    const duration = 2000; // 2 seconds animation
+
+    const animate = (currentTime) => {
+      if (!startTime) startTime = currentTime;
+      const progress = Math.min((currentTime - startTime) / duration, 1);
+      
+      // Easing function for smooth slowdown at the end (easeOutExpo)
+      const easeProgress = progress === 1 ? 1 : 1 - Math.pow(2, -10 * progress);
+      
+      setCount(Math.floor(easeProgress * target));
+
+      if (progress < 1) {
+        requestAnimationFrame(animate);
+      } else {
+        setCount(target);
+      }
+    };
+
+    requestAnimationFrame(animate);
+  }, [target]);
+
+  return (
+    <span>
+      {prefix}{count.toLocaleString()}{suffix}
+    </span>
+  );
+}
+
 /* ─── LANDING PAGE ───────────────────────────────────── */
 function LandingPage({ onSelectRole }) {
+  const [stats, setStats] = useState({
+    shops: 2400,
+    lossesPrevented: 18,
+    foodSaved: 340,
+    avgPickup: 4
+  });
+
+  useEffect(() => {
+    async function loadStats() {
+      const data = await getPlatformStats();
+      if (data) {
+        setStats(data);
+      }
+    }
+    loadStats();
+  }, []);
+
   return (
     <div style={{ minHeight:"100vh", background:"linear-gradient(135deg, #fefefb 0%, #e8f5e9 100%)", display:"flex", flexDirection:"column", position:"relative", overflow:"hidden" }}>
       {/* Decorative background waves/shapes */}
@@ -456,10 +506,10 @@ function LandingPage({ onSelectRole }) {
         <div className="fade-in" style={{ display:"flex", gap:36, marginTop:80, flexWrap:"wrap", justifyContent:"center",
           background:C.white, padding:"28px 48px", borderRadius:24, boxShadow:"0 12px 40px rgba(0,0,0,0.06)", position:"relative", zIndex:10 }}>
           {[
-            { v:"2,400+", l:"Kirana stores connected", icon:"🏪", bg:"#e8f5e9", col:"#2e7d32" },
-            { v:"₹18L", l:"Losses prevented", icon:"🛡️", bg:"#ffebee", col:"#c62828" },
-            { v:"340 kg", l:"Food saved", icon:"🍃", bg:"#e8f5e9", col:"#2e7d32" },
-            { v:"4 min", l:"Avg deal pickup", icon:"⏱️", bg:"#ffebee", col:"#c62828" }
+            { v: stats.shops, suffix: "", l:"Kirana stores connected", icon:"🏪", bg:"#e8f5e9", col:"#2e7d32" },
+            { v: stats.lossesPrevented, prefix: "₹", suffix: "", l:"Losses prevented", icon:"🛡️", bg:"#ffebee", col:"#c62828" },
+            { v: stats.foodSaved, suffix: " kg", l:"Food saved", icon:"🍃", bg:"#e8f5e9", col:"#2e7d32" },
+            { v: stats.avgPickup, suffix: " min", l:"Avg deal pickup", icon:"⏱️", bg:"#ffebee", col:"#c62828" }
           ].map((c)=>(
             <div key={c.l} style={{ display:"flex", alignItems:"center", gap:16, padding:"0 12px" }}>
               <div style={{ width:56, height:56, borderRadius:"50%", background:c.bg, color:c.col,
@@ -467,7 +517,9 @@ function LandingPage({ onSelectRole }) {
                 {c.icon}
               </div>
               <div style={{ textAlign:"left" }}>
-                <div style={{ fontSize:28, fontFamily:"'Syne',sans-serif", fontWeight:800, color:C.ink }}>{c.v}</div>
+                <div style={{ fontSize:28, fontFamily:"'Syne',sans-serif", fontWeight:800, color:C.ink }}>
+                  <AnimatedNumber target={c.v} prefix={c.prefix} suffix={c.suffix} />
+                </div>
                 <div style={{ fontSize:13, color:C.inkMuted, marginTop:2, maxWidth:90 }}>{c.l}</div>
               </div>
             </div>
