@@ -642,7 +642,7 @@ function ShopkeeperDashboard({ user, onLogout }) {
       </nav>
 
       <div style={{ maxWidth:980, margin:"0 auto", padding:"28px 20px" }}>
-        {tab==="dashboard" && <ShopDashboard products={products} user={user} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
+        {tab==="dashboard" && <ShopDashboard products={products} setProducts={setProducts} loadProducts={() => loadProducts(shopId)} user={user} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
         {tab==="upload" && <ShopUpload products={products} setProducts={setProducts} ensureShop={ensureShop} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
         {tab==="expiring" && <ShopExpiring products={products} setProducts={setProducts} accent={C.shopAccent} accentLight={C.shopAccentLight} />}
       </div>
@@ -650,7 +650,8 @@ function ShopkeeperDashboard({ user, onLogout }) {
   );
 }
 
-function ShopDashboard({ products, user, accent, accentLight }) {
+function ShopDashboard({ products, setProducts, loadProducts, user, accent, accentLight }) {
+  const [confirmingId, setConfirmingId] = useState(null);
   const reserved = products.filter(p=>p.reserved).length;
   const lapsed = products.filter(p=>p.lapsed).length;
   const saved = products.reduce((s,p)=>s + Math.round(p.mrp * p.discount / 100), 0);
@@ -682,21 +683,31 @@ function ShopDashboard({ products, user, accent, accentLight }) {
             </div>
             {p.reserved ? (
               <button 
+                disabled={confirmingId === p.id}
                 onClick={async () => {
                   try {
+                    setConfirmingId(p.id);
                     await confirmSale(p.id);
-                    // It will auto-refresh via real-time subscription
+                    // Immediate UI update for snappiness
+                    setProducts(prev => prev.map(prod => prod.id === p.id ? { ...prod, qty: Math.max(0, prod.qty - 1), reserved: false } : prod));
+                    // Also trigger a full reload to be safe
+                    loadProducts();
                   } catch (e) {
+                    console.error(e);
                     alert("Failed to confirm sale");
+                  } finally {
+                    setConfirmingId(null);
                   }
                 }}
                 style={{ 
-                  background: C.green, color: C.white, border: "none", 
+                  background: confirmingId === p.id ? C.inkMuted : C.green, 
+                  color: C.white, border: "none", 
                   padding: "8px 14px", borderRadius: 8, fontWeight: 700, 
-                  cursor: "pointer", fontSize: 13, marginLeft: 10
+                  cursor: confirmingId === p.id ? "wait" : "pointer", 
+                  fontSize: 13, marginLeft: 10, transition: "background 0.2s"
                 }}
               >
-                Confirm Sale (-1)
+                {confirmingId === p.id ? "Confirming..." : "Confirm Sale (-1)"}
               </button>
             ) : (
               <UrgencyBadge days={p.daysLeft} />
@@ -988,14 +999,24 @@ function ShopExpiring({ products, setProducts, accent, accentLight }) {
   useEffect(()=>{
     const t = setInterval(()=>{
       setTimers(prev=>{
+        let changed = false;
         const next = {...prev};
         products.forEach(p=>{
-          if (p.reserved && p.reserveMin > 0) {
-            if (!next[p.id]) next[p.id] = p.reserveMin * 60;
-            else if (next[p.id] > 0) next[p.id]--;
+          if (p.reserved && p.reserveMin > 0 && !p.lapsed) {
+            if (next[p.id] === undefined) {
+              next[p.id] = p.reserveMin * 60;
+              changed = true;
+            } else if (next[p.id] > 0) {
+              next[p.id]--;
+              changed = true;
+              // Auto-release if it hits 0
+              if (next[p.id] === 0) {
+                release(p.id);
+              }
+            }
           }
         });
-        return next;
+        return changed ? next : prev;
       });
     }, 1000);
     return ()=>clearInterval(t);
